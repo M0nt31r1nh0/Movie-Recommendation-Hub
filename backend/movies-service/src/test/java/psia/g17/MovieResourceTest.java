@@ -1,6 +1,7 @@
 package psia.g17;
 
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
@@ -10,6 +11,7 @@ import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.hasSize;
 
 @QuarkusTest
+@TestSecurity(user = "alice")
 class MovieResourceTest {
 
     @Test
@@ -21,6 +23,7 @@ class MovieResourceTest {
                 .body("title", is("Pulp Fiction"))
                 .body("rating", is(8.3f))
                 .body("releaseDate", is("1994-09-10"))
+                .body("imdbId", is("tt0110912"))
                 .body("genres.name", contains("Crime", "Thriller"));
     }
 
@@ -38,11 +41,28 @@ class MovieResourceTest {
                 .then()
                 .statusCode(200)
                 .body("items", hasSize(2))
-                .body("items[0].id", is(3))
+                .body("items.id", contains(4, 3))
                 .body("page", is(1))
                 .body("size", is(2))
-                .body("totalItems", is(8))
-                .body("totalPages", is(4));
+                .body("totalItems", is(9))
+                .body("totalPages", is(5));
+    }
+
+    @Test
+    void listsNewestFirstByDefaultWithUndatedLast() {
+        given().when().get("/movies")
+                .then()
+                .statusCode(200)
+                .body("items.id", contains(6, 7, 4, 3, 9, 2, 8, 1, 5));
+    }
+
+    @Test
+    void sortsAscendingWhenOnlyTheSortFieldIsGiven() {
+        given().queryParam("sort", "title")
+                .when().get("/movies")
+                .then()
+                .statusCode(200)
+                .body("items[0].title", is("Amélie"));
     }
 
     @Test
@@ -51,7 +71,7 @@ class MovieResourceTest {
                 .when().get("/movies")
                 .then()
                 .statusCode(200)
-                .body("items.id", contains(1, 2, 3, 4, 6, 8, 7, 5));
+                .body("items.id", contains(1, 2, 3, 4, 9, 6, 8, 7, 5));
     }
 
     @Test
@@ -60,7 +80,7 @@ class MovieResourceTest {
                 .when().get("/movies")
                 .then()
                 .statusCode(200)
-                .body("items.id", contains(7, 8, 6, 4, 2, 3, 1, 5));
+                .body("items.id", contains(7, 8, 6, 9, 4, 2, 3, 1, 5));
     }
 
     @Test
@@ -111,9 +131,51 @@ class MovieResourceTest {
     }
 
     @Test
+    void searchMatchesTheStartOfTitleWords() {
+        search("incep")
+                .body("items.id", contains(4));
+    }
+
+    @Test
+    void searchRanksTitlesStartingWithTheQueryByPopularity() {
+        search("sp")
+                .body("items.id", contains(3, 7));
+    }
+
+    @Test
+    void searchIgnoresAccents() {
+        search("amelie").body("items.id", contains(9));
+        search("AMÉLIE").body("items.id", contains(9));
+    }
+
+    @Test
+    void searchAddsSimilarTitlesBelowOtherMatchesWhenThereAreFew() {
+        // Solaris mentions Amelia in its description; Amélie only looks similar.
+        search("amelia")
+                .body("items.id", contains(8, 9));
+    }
+
+    @Test
     void searchToleratesTyposInTitles() {
         search("godfater")
                 .body("items.id", contains(1));
+    }
+
+    @Test
+    void searchCanOrderMatchesByAFieldInsteadOfRelevance() {
+        given().queryParam("q", "space station").queryParam("sort", "releaseDate").queryParam("order", "asc")
+                .when().get("/movies/search")
+                .then()
+                .statusCode(200)
+                .body("items.id", contains(8, 7));
+    }
+
+    @Test
+    void searchRejectsUnknownSortField() {
+        given().queryParam("q", "space").queryParam("sort", "budget")
+                .when().get("/movies/search")
+                .then()
+                .statusCode(400);
     }
 
     @Test

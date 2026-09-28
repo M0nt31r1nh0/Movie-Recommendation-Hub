@@ -42,6 +42,10 @@ public class Movie extends PanacheEntityBase {
     @Column(name = "release_date")
     public LocalDate releaseDate;
 
+    /** E.g. "tt0068646"; the movie's page is https://www.imdb.com/title/{imdbId}/. Null for a few movies. */
+    @Column(name = "imdb_id", length = 12)
+    public String imdbId;
+
     // Batch-loaded so a page of movies costs one extra query for all their genres, not one per movie.
     @ManyToMany
     @JoinTable(name = "movie_genre", schema = "movies",
