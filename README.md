@@ -1,93 +1,211 @@
-# g17
+# Movies
 
+A movie catalogue built on [The Movies Dataset](https://www.kaggle.com/datasets/rounakbanik/the-movies-dataset) (about 45,000 TMDB movies).
 
+| Part | Path | Stack | Port |
+|---|---|---|---|
+| Database | `infra/compose.yaml`, `data/` | PostgreSQL 16 in Docker | 5432 |
+| Movies API | `backend/movies-service/` | Java 21+, Quarkus, Hibernate ORM with Panache | 8080 |
+| Frontend | `frontend/movies-frontend/` | Next.js 16, React 19, Tailwind CSS 4 | 3000 |
 
-## Getting started
+## Install and configure
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+You need four tools. The versions below are the ones the project is developed with.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+| Tool | Version | Needed for |
+|---|---|---|
+| Docker Engine with the Compose plugin | Compose v2+ | The database, and the backend tests |
+| Java, installed with SDKMAN! | 27 (any JDK 21+ works) | The backend |
+| Node.js with npm, installed with nvm | 24 LTS (20.9+ works) | The frontend |
+| `psql` | any | Optional: querying the database from your machine |
 
-## Add your files
+The commands below are for Debian or Ubuntu. On macOS, the SDKMAN! and nvm steps are the same, and for Docker you install [Docker Desktop](https://docs.docker.com/desktop/).
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+You don't need to install Maven: the backend ships the Maven wrapper (`./mvnw`), which downloads the right Maven version on first use.
 
+### Docker
+
+Install Docker Engine and the Compose plugin by following the [official guide](https://docs.docker.com/engine/install/) for your distribution, or use Docker's convenience script:
+
+```bash
+curl -fsSL https://get.docker.com | sh
 ```
-cd existing_repo
-git remote add origin https://gitlab.rnl.tecnico.ulisboa.pt/psia/groups26/g17.git
-git branch -M master
-git push -uf origin master
+
+**Configure:** let your user run Docker without `sudo`. The backend tests also need this, because they start containers themselves.
+
+```bash
+sudo usermod -aG docker $USER
 ```
 
-## Integrate with your tools
+Log out and back in for the group change to apply, then check:
 
-- [ ] [Set up project integrations](https://gitlab.rnl.tecnico.ulisboa.pt/psia/groups26/g17/-/settings/integrations)
+```bash
+docker run --rm hello-world
+docker compose version
+```
 
-## Collaborate with your team
+### Java 27 with SDKMAN!
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+SDKMAN! needs `curl`, `zip` and `unzip`:
 
-## Test and Deploy
+```bash
+sudo apt install -y curl zip unzip
+curl -s "https://get.sdkman.io" | bash
+source "$HOME/.sdkman/bin/sdkman-init.sh"
+```
 
-Use the built-in continuous integration in GitLab.
+Install Java 27 and make it the default:
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+```bash
+sdk install java 27.0.0-oracle
+sdk default java 27.0.0-oracle
+```
 
-***
+To use a different vendor, `sdk list java` shows every available build, e.g. Temurin (`-tem`).
 
-# Editing this README
+**Configure:** the installer adds SDKMAN! to `~/.bashrc` (or `~/.zshrc`), which sets `JAVA_HOME` in every new terminal. The Maven wrapper needs `JAVA_HOME`, so open a new terminal and check:
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+```bash
+java -version      # java version "27" ...
+echo $JAVA_HOME    # /home/<you>/.sdkman/candidates/java/current
+```
 
-## Suggestions for a good README
+If `JAVA_HOME` is empty, e.g. in a shell that doesn't read `~/.bashrc`, set it yourself:
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+```bash
+export JAVA_HOME="$HOME/.sdkman/candidates/java/current"
+```
 
-## Name
-Choose a self-explaining name for your project.
+### Node.js 24 with nvm
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+source ~/.bashrc
+nvm install --lts
+nvm alias default 'lts/*'
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+**Configure:** like SDKMAN!, the installer adds nvm to `~/.bashrc`, so `node` and `npm` are available in every new terminal. Check:
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```bash
+node -v    # v24.x
+npm -v
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+### psql (optional)
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+You only need this to query the database from your machine. The steps below run `psql` inside the database container instead.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```bash
+sudo apt install -y postgresql-client
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+### Project configuration
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+Nothing else needs configuring if you keep the defaults:
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+| Setting | Default | Where to change it |
+|---|---|---|
+| Database name, user and password | `movies`, `postgres`, `postgres` | Set `POSTGRES_DB`, `POSTGRES_USER` or `POSTGRES_PASSWORD` before the first `docker compose up`. If you do, also change the matching `%dev.quarkus.datasource.*` lines in `backend/movies-service/src/main/resources/application.properties`. |
+| Database port | `5432` | `ports` in `infra/compose.yaml`, and `%dev.quarkus.datasource.jdbc.url` in `application.properties` |
+| API port | `8080` | `-Dquarkus.http.port=<port>` when starting the API |
+| Frontend port | `3000` | `npm run dev -- -p <port>` |
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## 1. Start the database
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```bash
+docker compose -f infra/compose.yaml up -d
+```
 
-## License
-For open source projects, say how it is licensed.
+This starts PostgreSQL on `localhost:5432` with database `movies`, user `postgres` and password `postgres`. To use different values, set `POSTGRES_USER`, `POSTGRES_PASSWORD` or `POSTGRES_DB` before running it. The data is kept in the `postgres_data` Docker volume, so it survives restarts.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+### Load the data (first time only)
+
+```bash
+docker exec -i postgres psql -U postgres -d movies < data/movies_dump.sql
+```
+
+This runs `psql` inside the container, so you don't need it installed locally. It takes a few seconds and creates the `movies` schema with its tables, view and indexes.
+
+The dump was produced by `pg_dump` 17, so Postgres 16 prints one error during the restore: `unrecognized configuration parameter "transaction_timeout"`. It's harmless and the rest of the restore completes.
+
+Check the result:
+
+```bash
+docker exec postgres psql -U postgres -d movies -c "select count(*) from movies.movie"
+# 45430
+```
+
+Run the restore only once, into an empty database. Running it again fails because the tables already exist.
+
+To start over from scratch, run `docker compose -f infra/compose.yaml down -v`. **This deletes all the data**, and you'll need to restore the dump again.
+
+`data/schema.sql` documents the schema and how the raw CSVs in `data/raw/` were cleaned. You don't need it to run the project: the dump already contains everything.
+
+## 2. Start the movies API
+
+```bash
+cd backend/movies-service
+./mvnw quarkus:dev
+```
+
+The first run downloads the dependencies and takes a while. Once it's up:
+
+- `http://localhost:8080/movies`: paginated list of movies
+- `http://localhost:8080/q/swagger-ui`: interactive API docs
+- `http://localhost:8080/q/openapi`: OpenAPI document
+- `http://localhost:8080/q/health`: health check
+
+In dev mode the service connects to the database from step 1. It never creates, changes or drops tables there: at startup it only checks that its mapping matches the existing schema.
+
+### Endpoints
+
+| Method | Path | Query parameters | Returns |
+|---|---|---|---|
+| `GET` | `/movies` | `page`: default `0`, zero-based<br>`size`: default `20`, 1–100<br>`sort`: `id` (default), `title`, `rating` or `releaseDate`<br>`order`: `asc` (default) or `desc` | A page of movies: `{ items, page, size, totalItems, totalPages }` |
+| `GET` | `/movies/{id}` | | One movie, or `404` |
+
+An invalid parameter returns `400`. Movies without a value for the sort field always come last.
+
+```bash
+curl "localhost:8080/movies?sort=rating&order=desc&size=5"
+curl localhost:8080/movies/238
+```
+
+### Tests
+
+```bash
+./mvnw test
+```
+
+The tests don't touch your database. They start their own temporary PostgreSQL container, so Docker must be running.
+
+### Production build
+
+```bash
+./mvnw package
+QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://localhost:5432/movies \
+QUARKUS_DATASOURCE_USERNAME=postgres \
+QUARKUS_DATASOURCE_PASSWORD=postgres \
+java -jar target/quarkus-app/quarkus-run.jar
+```
+
+## 3. Start the frontend
+
+```bash
+cd frontend/movies-frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. The frontend is still the Next.js starter page and doesn't call the API yet.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `The JAVA_HOME environment variable is not defined correctly` | Set `JAVA_HOME` as shown in [Java 27 with SDKMAN!](#java-27-with-sdkman). |
+| `Bind for 0.0.0.0:5432 failed: port is already allocated` | Another PostgreSQL is running on 5432. Stop it, or change the host port in `infra/compose.yaml` and update `%dev.quarkus.datasource.jdbc.url` in `backend/movies-service/src/main/resources/application.properties` to match. |
+| `The container name "/postgres" is already in use` | A container named `postgres` already exists, maybe from another project. If it's this database, keep using it. Otherwise stop and remove it with `docker rm -f postgres`, which **deletes its data unless it's stored in a volume**. |
+| The API fails at startup with a schema validation error about a missing table | The dump hasn't been loaded. See [Load the data](#load-the-data-first-time-only). |
+| Port 8080 or 3000 is in use | Run the API with `./mvnw quarkus:dev -Dquarkus.http.port=8081`, or the frontend with `npm run dev -- -p 3001`. |
