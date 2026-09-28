@@ -121,11 +121,13 @@ This starts PostgreSQL on `localhost:5432` with database `movies`, user `postgre
 
 ### Load the data (first time only)
 
+Do this **before you start the API for the first time**. On an empty database, the API creates empty tables on startup, and the restore then clashes with them (see [Troubleshooting](#troubleshooting)).
+
 ```bash
 docker exec -i postgres psql -U postgres -d movies < data/movies_dump.sql
 ```
 
-This runs `psql` inside the container, so you don't need it installed locally. It takes a few seconds and creates the `movies` schema with its tables, view and indexes.
+This runs `psql` inside the container, so you don't need it installed locally. It takes a few seconds and creates the `movies` schema with its tables, view and indexes. The columns and indexes for search aren't in the dump: the API adds them the first time it starts (see [Database migrations](#database-migrations)).
 
 The dump was produced by `pg_dump` 17, so Postgres 16 prints one error during the restore: `unrecognized configuration parameter "transaction_timeout"`. It's harmless and the rest of the restore completes.
 
@@ -140,7 +142,7 @@ Run the restore only once, into an empty database. Running it again fails becaus
 
 To start over from scratch, run `docker compose -f infra/compose.yaml down -v`. **This deletes all the data**, and you'll need to restore the dump again.
 
-`data/schema.sql` documents the schema and how the raw CSVs in `data/raw/` were cleaned. You don't need it to run the project: the dump already contains everything.
+`data/schema.sql` documents the schema as it is in the dump, and how the raw CSVs in `data/raw/` were cleaned. You don't need it to run the project. Later schema changes, such as the search columns, live in the API's migration files instead.
 
 ## 2. Start the movies API
 
@@ -156,21 +158,51 @@ The first run downloads the dependencies and takes a while. Once it's up:
 - `http://localhost:8080/q/openapi`: OpenAPI document
 - `http://localhost:8080/q/health`: health check
 
-In dev mode the service connects to the database from step 1. It never creates, changes or drops tables there: at startup it only checks that its mapping matches the existing schema.
+In dev mode the service connects to the database from step 1.
+
+### Database migrations
+
+The service manages schema changes with [Flyway](https://documentation.red-gate.com/flyway). On every startup, it applies any SQL file in `backend/movies-service/src/main/resources/db/migration/` that the database hasn't run yet, in version order, and records it in the `movies.flyway_schema_history` table.
+
+| File | What it does |
+|---|---|
+| `V1__movies_schema.sql` | The base schema, the same as in the dump. It only runs on an empty database, such as in tests. A database restored from the dump is recorded as already at version 1. |
+| `V2__movie_full_text_search.sql` | Adds the full-text search columns `search_vector` and `title_vector` to `movies.movie`, with their indexes. |
+| `V3__movie_title_fuzzy_search.sql` | Enables the `pg_trgm` extension and adds a trigram index on `title`, for typo-tolerant search. |
+
+The migrations only add to the schema; none of them drops anything. The first start after restoring the dump takes a few extra seconds while V2 and V3 fill in the search columns for all 45,430 movies. After that, startup skips them.
+
+To change the schema, **add a new file** with the next version number, e.g. `V4__add_movie_runtime.sql`. Never edit a migration that has already run anywhere: Flyway compares every applied file with its recorded checksum, and refuses to start if one changed.
+
+Hibernate doesn't change the schema at all. In dev and tests, it only checks at startup that the Java entities match the tables.
 
 ### Endpoints
 
 | Method | Path | Query parameters | Returns |
 |---|---|---|---|
 | `GET` | `/movies` | `page`: default `0`, zero-based<br>`size`: default `20`, 1–100<br>`sort`: `id` (default), `title`, `rating` or `releaseDate`<br>`order`: `asc` (default) or `desc` | A page of movies: `{ items, page, size, totalItems, totalPages }` |
+| `GET` | `/movies/search` | `q`: required, up to 200 characters<br>`page`, `size`: as for `/movies` | A page of matching movies, best matches first |
 | `GET` | `/movies/{id}` | | One movie, or `404` |
 
-An invalid parameter returns `400`. Movies without a value for the sort field always come last.
+An invalid parameter returns `400`. In `/movies`, movies without a value for the sort field always come last.
 
 ```bash
 curl "localhost:8080/movies?sort=rating&order=desc&size=5"
+curl "localhost:8080/movies/search?q=dark+knight"
 curl localhost:8080/movies/238
 ```
+
+### Search
+
+`/movies/search` looks for the words of `q` in movie titles and descriptions, using PostgreSQL's built-in full-text search.
+
+- **Words match in any form:** `dreams` also finds "dream", and `running` finds "run".
+- **Search-engine syntax works:** `"dark knight"` for an exact phrase, `alien or predator` for either word, `heist -casino` to exclude a word.
+- **Title matches come first**, most popular (most rated) first, followed by movies that match only in their description, most relevant first.
+- **Common words are ignored** ("the", "of", "it"). A query made only of such words, like `It` or `The Who`, instead matches title words exactly as written.
+- **Typos in titles are tolerated:** if nothing matches, the search falls back to titles that look similar, so `godfater` finds *The Godfather* and `incepton` finds *Inception*.
+
+Descriptions are matched as English, and accents count: `amelie` doesn't find *Amélie*.
 
 ### Tests
 
@@ -178,7 +210,7 @@ curl localhost:8080/movies/238
 ./mvnw test
 ```
 
-The tests don't touch your database. They start their own temporary PostgreSQL container, so Docker must be running.
+The tests don't touch your database. They start their own temporary PostgreSQL container, so Docker must be running. Flyway builds the schema there from the migrations, then loads a few sample movies from `src/test/resources/db/testdata/R__test_data.sql`.
 
 ### Production build
 
@@ -207,5 +239,7 @@ Open `http://localhost:3000`. The frontend is still the Next.js starter page and
 | `The JAVA_HOME environment variable is not defined correctly` | Set `JAVA_HOME` as shown in [Java 27 with SDKMAN!](#java-27-with-sdkman). |
 | `Bind for 0.0.0.0:5432 failed: port is already allocated` | Another PostgreSQL is running on 5432. Stop it, or change the host port in `infra/compose.yaml` and update `%dev.quarkus.datasource.jdbc.url` in `backend/movies-service/src/main/resources/application.properties` to match. |
 | `The container name "/postgres" is already in use` | A container named `postgres` already exists, maybe from another project. If it's this database, keep using it. Otherwise stop and remove it with `docker rm -f postgres`, which **deletes its data unless it's stored in a volume**. |
-| The API fails at startup with a schema validation error about a missing table | The dump hasn't been loaded. See [Load the data](#load-the-data-first-time-only). |
+| The API starts, but `/movies` returns no movies | The API started before the dump was restored, so Flyway created empty tables. Reset the database with `docker compose -f infra/compose.yaml down -v` (this deletes all its data) and `docker compose -f infra/compose.yaml up -d`, then restore the dump before starting the API again. |
+| The restore prints many `already exists` errors | Same cause: the API created the tables first. Reset the database as in the previous row, then restore before starting the API. |
+| The API fails at startup with `Validate failed: Migrations have failed validation` | A migration file changed after it had already run. Undo the edit, e.g. with `git checkout` on that file, and put the change in a new `V<next>__...sql` file instead. |
 | Port 8080 or 3000 is in use | Run the API with `./mvnw quarkus:dev -Dquarkus.http.port=8081`, or the frontend with `npm run dev -- -p 3001`. |

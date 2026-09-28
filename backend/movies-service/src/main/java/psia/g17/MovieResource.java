@@ -5,7 +5,9 @@ import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
@@ -18,6 +20,12 @@ import jakarta.ws.rs.core.MediaType;
 @Path("/movies")
 @Produces(MediaType.APPLICATION_JSON)
 public class MovieResource {
+
+    private final MovieSearch movieSearch;
+
+    public MovieResource(MovieSearch movieSearch) {
+        this.movieSearch = movieSearch;
+    }
 
     @GET
     public PageResponse<Movie> list(
@@ -33,6 +41,19 @@ public class MovieResource {
         }
         PanacheQuery<Movie> query = Movie.findAll(orderBy).page(Page.of(page, size));
         return new PageResponse<>(query.list(), page, size, query.count(), query.pageCount());
+    }
+
+    /**
+     * Full-text search on title and description. Supports web-search syntax: {@code "exact phrase"},
+     * {@code or}, and {@code -excluded}. Falls back to a typo-tolerant title match when nothing matches.
+     */
+    @GET
+    @Path("/search")
+    public PageResponse<Movie> search(
+            @QueryParam("q") @NotBlank @Size(max = 200) String q,
+            @QueryParam("page") @DefaultValue("0") @Min(0) int page,
+            @QueryParam("size") @DefaultValue("20") @Min(1) @Max(100) int size) {
+        return movieSearch.search(q.strip(), page, size);
     }
 
     @GET
