@@ -1,9 +1,10 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { listMovies, searchMovies, type Movie } from "@/lib/api";
-import { useKeycloak } from "./auth-gate";
+import { useCallback, useState } from "react";
+import { listMovies, searchMovies } from "@/lib/api";
+import { useInfinitePages } from "@/lib/use-infinite-pages";
+import { useKeycloak } from "../auth-gate";
 import MovieCard from "./movie-card";
 import { defaultSortKey, parseSortKey, SORT_OPTIONS, sortKeysFor, type SortKey } from "./sort-options";
 
@@ -84,49 +85,14 @@ function SearchBar({ initialQuery, onSearch }: { initialQuery: string; onSearch:
 /** One search or sort's results, loading the next page whenever the end of the grid scrolls into view. */
 function MovieResults({ query, sortKey }: { query: string; sortKey: SortKey }) {
   const keycloak = useKeycloak();
-  const [movies, setMovies] = useState<Movie[]>([]);
-  const [total, setTotal] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Mutable paging state; a ref so overlapping scroll events can't request the same page twice.
-  const cursor = useRef({ nextPage: 0, done: false, busy: false });
-  const sentinel = useRef<HTMLDivElement>(null);
-
-  const loadNextPage = useCallback(async () => {
-    const state = cursor.current;
-    if (state.busy || state.done) return;
-    state.busy = true;
-    setLoading(true);
-    try {
-      const options = { ...SORT_OPTIONS[sortKey].params, page: state.nextPage, size: PAGE_SIZE };
-      const page = query ? await searchMovies(keycloak, query, options) : await listMovies(keycloak, options);
-      setMovies((loaded) => [...loaded, ...page.items]);
-      setTotal(page.totalItems);
-      state.nextPage += 1;
-      state.done = state.nextPage >= page.totalPages;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
-      state.done = true;
-    } finally {
-      state.busy = false;
-      setLoading(false);
-    }
-  }, [keycloak, query, sortKey]);
-
-  // A fresh observer after every page: it reports straight away whether the end of the grid is still
-  // visible, so a screen that isn't full yet keeps loading until it is.
-  useEffect(() => {
-    const element = sentinel.current;
-    if (!element) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) void loadNextPage();
-      },
-      { rootMargin: "800px 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [loadNextPage, movies.length]);
+  const fetchPage = useCallback(
+    (page: number) => {
+      const options = { ...SORT_OPTIONS[sortKey].params, page, size: PAGE_SIZE };
+      return query ? searchMovies(keycloak, query, options) : listMovies(keycloak, options);
+    },
+    [keycloak, query, sortKey],
+  );
+  const { items: movies, total, loading, error, sentinelRef } = useInfinitePages(fetchPage);
 
   return (
     <>
@@ -142,7 +108,7 @@ function MovieResults({ query, sortKey }: { query: string; sortKey: SortKey }) {
           <MovieCard key={movie.id} movie={movie} />
         ))}
       </ul>
-      <div ref={sentinel} className="h-px" />
+      <div ref={sentinelRef} className="h-px" />
       {loading && <p className="py-6 text-center text-sm text-foreground/60">Loading…</p>}
       {error && <p className="py-6 text-red-600">Couldn&apos;t load movies: {error}</p>}
       {!loading && !error && total === 0 && <p className="text-foreground/70">No movies found.</p>}

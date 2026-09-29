@@ -30,7 +30,7 @@ export function Poster({
   width = "w342",
   className = "",
 }: {
-  movie: Movie;
+  movie: Pick<Movie, "title" | "posterPath">;
   sizes: string;
   width?: "w342" | "w500";
   className?: string;

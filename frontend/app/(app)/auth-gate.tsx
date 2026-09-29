@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type Keycloak from "keycloak-js";
 import { createContext, use, useEffect, useState } from "react";
+import { getProfile } from "@/lib/api";
 import { getKeycloak } from "@/lib/keycloak";
 
 const KeycloakContext = createContext<Keycloak | null>(null);
@@ -16,7 +18,7 @@ export function useKeycloak(): Keycloak {
 
 /**
  * Makes sure the user is logged in (sending them to Keycloak's login page if not), then shows the
- * top bar and the page. Everything under /movies renders inside it.
+ * top bar and the page.
  */
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [keycloak, setKeycloak] = useState<Keycloak | null>(null);
@@ -24,19 +26,27 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     getKeycloak({ loginRequired: true })
-      .then(setKeycloak)
+      .then((kc) => {
+        setKeycloak(kc);
+        // profiles-service creates a user's profile on their first request, so ask for it right away:
+        // everyone who logs in shows up under Users. The movie pages work without it, so errors don't matter.
+        getProfile(kc, "me").catch(() => undefined);
+      })
       .catch(() => setError("Couldn't reach the login server. Is Keycloak running?"));
   }, []);
 
   return (
     <KeycloakContext value={keycloak}>
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-foreground/10 px-6">
-        <Link href="/movies" className="text-lg font-semibold">
-          Movies
-        </Link>
+        <nav className="flex items-center gap-6">
+          <Link href="/movies" className="text-lg font-semibold">
+            Movies
+          </Link>
+          <NavLink href="/users">Users</NavLink>
+        </nav>
         {keycloak && (
           <div className="flex items-center gap-3 text-sm">
-            <span className="text-foreground/70">{keycloak.tokenParsed?.preferred_username}</span>
+            <NavLink href="/users/me">{keycloak.tokenParsed?.preferred_username}</NavLink>
             <button
               type="button"
               onClick={() => keycloak.logout({ redirectUri: window.location.origin })}
@@ -55,5 +65,19 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
         </main>
       )}
     </KeycloakContext>
+  );
+}
+
+function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+  const pathname = usePathname();
+  const active = pathname === href || (href === "/users" && pathname.startsWith("/users/") && pathname !== "/users/me");
+  return (
+    <Link
+      href={href}
+      aria-current={active ? "page" : undefined}
+      className={`text-sm font-medium hover:underline ${active ? "text-foreground" : "text-foreground/70"}`}
+    >
+      {children}
+    </Link>
   );
 }

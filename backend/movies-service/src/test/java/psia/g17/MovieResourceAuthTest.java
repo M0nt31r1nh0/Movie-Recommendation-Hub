@@ -11,7 +11,7 @@ import static io.restassured.RestAssured.given;
 class MovieResourceAuthTest {
 
     @ParameterizedTest
-    @ValueSource(strings = {"/movies", "/movies/1", "/movies/search?q=space"})
+    @ValueSource(strings = {"/movies", "/movies/1", "/movies/search?q=space", "/genres"})
     void rejectsRequestsWithoutAToken(String path) {
         given().when().get(path)
                 .then()

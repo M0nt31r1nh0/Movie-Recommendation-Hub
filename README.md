@@ -1,13 +1,28 @@
 # Movies
 
-A movie catalogue built on [The Movies Dataset](https://www.kaggle.com/datasets/rounakbanik/the-movies-dataset) (about 45,000 TMDB movies).
+A movie catalogue built on [The Movies Dataset](https://www.kaggle.com/datasets/rounakbanik/the-movies-dataset) (about 45,000 TMDB movies). Users register and log in through Keycloak, then browse and search movies, keep a profile of their favourite genres and the movies they've seen, and follow other users.
 
 | Part | Path | Stack | Port |
 |---|---|---|---|
 | Database | `infra/compose.yaml`, `data/` | PostgreSQL 16 in Docker | 5432 |
 | Accounts and login | `infra/compose.yaml`, `infra/keycloak/` | Keycloak 26 in Docker | 8180 |
 | Movies API | `backend/movies-service/` | Java 21+, Quarkus, Hibernate ORM with Panache | 8080 |
+| Profiles API | `backend/profiles-service/` | Java 21+, Quarkus, Hibernate ORM with Panache | 8081 |
 | Frontend | `frontend/` | Next.js 16, React 19, Tailwind CSS 4 | 3000 |
+
+## Quick start
+
+Once the tools below are installed, each in its own terminal, from the project root:
+
+```bash
+docker compose -f infra/compose.yaml up -d                                    # database and Keycloak
+docker exec -i postgres psql -U postgres -d movies < data/movies_dump.sql     # first time only
+(cd backend/movies-service && ./mvnw quarkus:dev)                             # movies API, port 8080
+(cd backend/profiles-service && ./mvnw quarkus:dev)                           # profiles API, port 8081
+(cd frontend && npm install && npm run dev)                                   # app, port 3000
+```
+
+Then open `http://localhost:3000` and register. The numbered sections below explain each step.
 
 ## Install and configure
 
@@ -107,11 +122,11 @@ Nothing else needs configuring if you keep the defaults:
 
 | Setting | Default | Where to change it |
 |---|---|---|
-| Database name, user and password | `movies`, `postgres`, `postgres` | Set `POSTGRES_DB`, `POSTGRES_USER` or `POSTGRES_PASSWORD` before the first `docker compose up`. If you do, also change the matching `%dev.quarkus.datasource.*` lines in `backend/movies-service/src/main/resources/application.properties`. |
-| Database port | `5432` | `ports` in `infra/compose.yaml`, and `%dev.quarkus.datasource.jdbc.url` in `application.properties` |
+| Database name, user and password | `movies`, `postgres`, `postgres` | Set `POSTGRES_DB`, `POSTGRES_USER` or `POSTGRES_PASSWORD` before the first `docker compose up`. If you do, also change the matching `%dev.quarkus.datasource.*` lines in both services' `src/main/resources/application.properties`. |
+| Database port | `5432` | `ports` in `infra/compose.yaml`, and `%dev.quarkus.datasource.jdbc.url` in both services' `application.properties` |
 | Keycloak admin user and password | `admin`, `admin` | Set `KEYCLOAK_ADMIN` or `KEYCLOAK_ADMIN_PASSWORD` before the first `docker compose up` |
-| Keycloak port | `8180` | `ports` and `KC_HOSTNAME` in `infra/compose.yaml`, and `%dev.quarkus.oidc.auth-server-url` in `application.properties` |
-| API port | `8080` | `-Dquarkus.http.port=<port>` when starting the API |
+| Keycloak port | `8180` | `ports` and `KC_HOSTNAME` in `infra/compose.yaml`, `%dev.quarkus.oidc.auth-server-url` in both services' `application.properties`, and `NEXT_PUBLIC_KEYCLOAK_URL` for the frontend |
+| API ports | `8080` (movies), `8081` (profiles) | `-Dquarkus.http.port=<port>` when starting an API. Changing them also means updating the frontend's configuration and, for Swagger UI logins, the `movies-swagger-ui` client in Keycloak |
 | Frontend port | `3000` | `npm run dev -- -p <port>` |
 
 ## 1. Start the database and Keycloak
@@ -134,7 +149,7 @@ docker compose -f infra/compose.yaml up -d keycloak
 
 ### Load the data (first time only)
 
-Do this **before you start the API for the first time**. On an empty database, the API creates empty tables on startup, and the restore then clashes with them (see [Troubleshooting](#troubleshooting)).
+Do this **before you start either API for the first time**. On an empty database, the movies API creates empty tables on startup, and the restore then clashes with them (see [Troubleshooting](#troubleshooting)). The profiles API refuses to start without the movie data, because its tables point at it.
 
 ```bash
 docker exec -i postgres psql -U postgres -d movies < data/movies_dump.sql
@@ -153,9 +168,9 @@ docker exec postgres psql -U postgres -d movies -c "select count(*) from movies.
 
 Run the restore only once, into an empty database. Running it again fails because the tables already exist.
 
-To start over from scratch, run `docker compose -f infra/compose.yaml down -v`. **This deletes all the data, including every user account**, and you'll need to restore the dump again.
+To start over from scratch, run `docker compose -f infra/compose.yaml down -v`. **This deletes all the data, including every user account and profile**, and you'll need to restore the dump again.
 
-`data/schema.sql` documents the schema as it is in the dump, and how the raw CSVs in `data/raw/` were cleaned. You don't need it to run the project. Later schema changes, such as the search columns, live in the API's migration files instead.
+`data/schema.sql` documents the schema as it is in the dump, and how the raw CSVs in `data/raw/` were cleaned. You don't need it to run the project. Later schema changes, such as the search columns, live in each API's migration files instead.
 
 ## 2. Start the movies API
 
@@ -171,7 +186,7 @@ The first run downloads the dependencies and takes a while. Once it's up:
 - `http://localhost:8080/q/openapi`: OpenAPI document
 - `http://localhost:8080/q/health`: health check
 
-In dev mode the service connects to the database and Keycloak from step 1. Every `/movies` endpoint needs a logged-in user: see [Accounts and login](#accounts-and-login) for how to get a token.
+In dev mode the service connects to the database and Keycloak from step 1. Every endpoint (`/movies`, `/genres`) needs a logged-in user: see [Accounts and login](#accounts-and-login) for how to get a token.
 
 ### Database migrations
 
@@ -187,7 +202,7 @@ The service manages schema changes with [Flyway](https://documentation.red-gate.
 
 The migrations only add to the schema; none of them drops anything. The first start after restoring the dump takes about 15 extra seconds while V2 to V5 fill in the new columns for all 45,430 movies. After that, startup skips them.
 
-To change the schema, **add a new file** with the next version number, e.g. `V4__add_movie_runtime.sql`. Never edit a migration that has already run anywhere: Flyway compares every applied file with its recorded checksum, and refuses to start if one changed.
+To change the schema, **add a new file** with the next version number, e.g. `V6__add_movie_runtime.sql`. Never edit a migration that has already run anywhere: Flyway compares every applied file with its recorded checksum, and refuses to start if one changed.
 
 Hibernate doesn't change the schema at all. In dev and tests, it only checks at startup that the Java entities match the tables.
 
@@ -198,11 +213,12 @@ Hibernate doesn't change the schema at all. In dev and tests, it only checks at 
 | `GET` | `/movies` | `page`: default `0`, zero-based<br>`size`: default `20`, 1–100<br>`sort`: `releaseDate` (default), `id`, `title` or `rating`<br>`order`: `asc` or `desc`. Without `sort`, it's newest first (`releaseDate`, `desc`); a `sort` without `order` is ascending | A page of movies: `{ items, page, size, totalItems, totalPages }` |
 | `GET` | `/movies/search` | `q`: required, up to 200 characters<br>`page`, `size`: as for `/movies`<br>`sort`: `relevance` (default), `id`, `title`, `rating` or `releaseDate`<br>`order`: `asc` (default) or `desc`; ignored for `relevance` | A page of matching movies, best matches first unless `sort` names a field |
 | `GET` | `/movies/{id}` | | One movie, or `404` |
+| `GET` | `/genres` | | All 20 movie categories, by name: `[{ id, name }]` |
 
-All three need an access token in an `Authorization: Bearer <token>` header. Without a valid one they return `401`; any logged-in user can use all of them. An invalid parameter returns `400`. In `/movies`, movies without a value for the sort field always come last.
+All of them need an access token in an `Authorization: Bearer <token>` header. Without a valid one they return `401`; any logged-in user can use all of them. An invalid parameter returns `400`. In `/movies`, movies without a value for the sort field always come last.
 
 ```bash
-TOKEN=...   # see "Calling the API yourself" below
+TOKEN=...   # see "Calling the APIs yourself" below
 curl -H "Authorization: Bearer $TOKEN" "localhost:8080/movies?size=5"    # newest first
 curl -H "Authorization: Bearer $TOKEN" "localhost:8080/movies?sort=rating&order=desc&size=5"
 curl -H "Authorization: Bearer $TOKEN" "localhost:8080/movies/search?q=dark+knight"
@@ -239,7 +255,7 @@ Prefix and similar-title matching are skipped for queries that use search syntax
 
 The tests don't touch your database. They start their own temporary PostgreSQL container, so Docker must be running. Flyway builds the schema there from the migrations, then loads a few sample movies from `src/test/resources/db/testdata/R__test_data.sql`.
 
-The tests don't need Keycloak either. They act as a logged-in user with Quarkus's `@TestSecurity`, and `MovieResourceAuthTest` checks that requests without a token are rejected.
+The tests don't need Keycloak either. They act as a logged-in user with Quarkus's `@TestSecurity`, and `MovieResourceAuthTest` checks that requests without a token are rejected. They run on a random port, so they don't clash with a running dev server.
 
 ### Production build
 
@@ -253,6 +269,64 @@ QUARKUS_HTTP_CORS_ORIGINS=http://localhost:3000 \
 java -jar target/quarkus-app/quarkus-run.jar
 ```
 
+## 3. Start the profiles API
+
+```bash
+cd backend/profiles-service
+./mvnw quarkus:dev
+```
+
+It runs on `http://localhost:8081`, next to the movies API, with its Swagger UI at `http://localhost:8081/q/swagger-ui`. It needs the database, with the dump loaded, and Keycloak (step 1).
+
+Every user has a profile listing their favourite genres, the movies they've seen, and the users they follow.
+
+**When profiles are created:** registering in Keycloak doesn't create a profile. The profile is created on the user's first request to this API, from their token (Keycloak user id and username), and the frontend makes that request right after login. So users show up under **Users** as soon as they log in to the app for the first time. Accounts created in the Keycloak admin console stay out of the list until their owner logs in once. A username changed in Keycloak is picked up on the user's next request.
+
+### Data
+
+Profiles live in the same database as the movies, in their own `profiles` schema, so they can point at movies and genres with real foreign keys. The service's own Flyway migrations (`backend/profiles-service/src/main/resources/db/migration/`) create the schema on first start, and only ever touch `profiles`.
+
+| Table | Contents |
+|---|---|
+| `profiles.profile` | One row per Keycloak user: their Keycloak user id (the token's `sub`), username and join date |
+| `profiles.favorite_genre` | Profile → `movies.genre` |
+| `profiles.watched_movie` | Profile → `movies.movie`, with when it was marked |
+| `profiles.follow` | Profile → profile it follows, with when. Following yourself is refused |
+
+Because of the foreign keys, **the movie data must be loaded before this service first starts**; otherwise its migration fails with `relation "movies.genre" does not exist`.
+
+Deleting a user in Keycloak doesn't delete their profile yet: that would need Keycloak to notify this service, e.g. through a Keycloak event listener extension, or a job that compares profiles with Keycloak's users.
+
+### Endpoints
+
+All need an access token (see [Calling the APIs yourself](#calling-the-apis-yourself)), and return `401` without one. Anyone logged in can read any profile; changes always go through `/profiles/me/...`, so users can only change their own. Wherever a path takes a profile id, `me` means the logged-in user.
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/profiles?q=<prefix>` | Profiles whose username starts with `q` (any case), or all of them, by username. `page` and `size` as for `/movies` |
+| `GET` | `/profiles/{id}` | One profile: `{ id, username, createdAt, favoriteGenres, watchedCount, followingCount, followersCount, me, followedByMe }`, or `404` |
+| `PUT` | `/profiles/me/favorite-genres` | Replaces your favourite genres with a JSON array of genre ids, e.g. `[18, 878]`. Unknown ids return `400` |
+| `GET` | `/profiles/{id}/watched` | The movies a profile has seen, most recently marked first (paginated) |
+| `GET` | `/profiles/me/watched/{movieId}` | `200` if you've marked the movie as seen, `404` if not |
+| `PUT` / `DELETE` | `/profiles/me/watched/{movieId}` | Marks a movie as seen, or unmarks it (`204`). Unknown movies return `404` |
+| `GET` | `/profiles/{id}/following` | The profiles a profile follows, most recent first (paginated) |
+| `GET` | `/profiles/{id}/followers` | The profiles following a profile, most recent first (paginated) |
+| `PUT` / `DELETE` | `/profiles/me/following/{id}` | Follows or unfollows a profile (`204`). Yourself returns `400`, unknown profiles `404` |
+
+The `PUT`s are safe to repeat: marking a movie or following a user twice changes nothing. Errors come with a JSON body: `{ "error": "..." }`.
+
+### Tests
+
+```bash
+./mvnw test
+```
+
+Like the movies API's tests, they use a temporary PostgreSQL container, `@TestSecurity` instead of Keycloak, and a random port. `@OidcSecurity` sets the token claims the service reads (`sub` and `preferred_username`), so each test can act as a different user. Since there's no movie data there, a test-only migration (`src/test/resources/db/testdata/`) creates small stand-ins for `movies.genre` and `movies.movie` before the real ones run.
+
+### Production build
+
+As for the movies API (`./mvnw package`, then `java -jar target/quarkus-app/quarkus-run.jar`), with the same environment variables. In production the port is 8080 unless you set `QUARKUS_HTTP_PORT`.
+
 ## Accounts and login
 
 User accounts live in [Keycloak](https://www.keycloak.org/), in a realm called `movies`. The realm is defined in `infra/keycloak/movies-realm.json`, which Keycloak imports on its first start.
@@ -260,24 +334,24 @@ User accounts live in [Keycloak](https://www.keycloak.org/), in a realm called `
 - **Anyone can create an account** from the login page's "Register" link: username, email, first and last name, and a password of at least 8 characters that isn't the username or email.
 - **Users log in with their username or email.** Repeated wrong passwords temporarily lock the account.
 - **There's no email verification or password reset yet**, because Keycloak has no mail server configured.
-- **Every logged-in user can do everything** the API offers. There are no roles yet.
+- **Every logged-in user can do everything** the APIs offer, except change someone else's profile. There are no roles yet.
 
 ### How the pieces fit
 
 1. An app sends the user to Keycloak's login page. Keycloak handles registration and login, then sends the user back to the app with a code.
 2. The app exchanges that code for an **access token**: a signed JWT that says who the user is, valid for 5 minutes.
-3. The app sends the token to the API in the `Authorization: Bearer` header. The API checks the signature, the expiry, the issuer (`http://localhost:8180/realms/movies`) and the audience. It never sees passwords.
+3. The app sends the token to the APIs in the `Authorization: Bearer` header. Each API checks the signature, the expiry, the issuer (`http://localhost:8180/realms/movies`) and the audience. They never see passwords.
 
-The realm has two apps (clients) that can log users in. Both are public clients using the authorization code flow with PKCE, and both add `movies-service` to their tokens' audience. The API rejects tokens without it, so a token issued for some other app in the realm doesn't work against the API.
+The realm has two apps (clients) that can log users in. Both are public clients using the authorization code flow with PKCE, and both add `movies-service` and `profiles-service` to their tokens' audience. Each API rejects tokens without its own name there, so a token issued for some other app in the realm doesn't work against them.
 
 | Client | Used by | Redirect URIs |
 |---|---|---|
 | `movies-frontend` | The Next.js app | `http://localhost:3000/*` |
-| `movies-swagger-ui` | The API's Swagger UI | `http://localhost:8080/q/swagger-ui/*` |
+| `movies-swagger-ui` | Both APIs' Swagger UIs | `http://localhost:8080/q/swagger-ui/*`, `http://localhost:8081/q/swagger-ui/*` |
 
-### Calling the API yourself
+### Calling the APIs yourself
 
-1. Open `http://localhost:8080/q/swagger-ui` and click **Authorize**. Leave `client_secret` empty, tick the `openid` scope, and click **Authorize** again.
+1. Open `http://localhost:8080/q/swagger-ui` (movies) or `http://localhost:8081/q/swagger-ui` (profiles) and click **Authorize**. Leave `client_secret` empty, tick the `openid` scope, and click **Authorize** again.
 2. Log in on the Keycloak page that opens, or click **Register** to create an account first.
 3. Back in Swagger UI, expand an endpoint and use **Try it out**. The request goes out with your token.
 
@@ -289,7 +363,15 @@ The `curl` command Swagger UI shows for each request includes the token, if you 
 
 Changes made in the console are stored in Keycloak's database, not in `movies-realm.json`. The realm file is only imported when the realm doesn't exist yet, so later edits to it don't reach an existing Keycloak. To apply them, either make the same change in the console, or delete the `movies` realm in the console (**this deletes its user accounts**) and restart Keycloak with `docker compose -f infra/compose.yaml restart keycloak`.
 
-## 3. Start the frontend
+**If your Keycloak was set up before the profiles API existed**, run this once. It adds the `profiles-service` audience and the second Swagger UI address, and keeps all accounts:
+
+```bash
+./infra/keycloak/add-profiles-service.sh
+```
+
+Then log out and in again, so your token includes the new audience.
+
+## 4. Start the frontend
 
 ```bash
 cd frontend
@@ -297,15 +379,17 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. Keycloak and the API must be running (steps 1 and 2).
+Open `http://localhost:3000`. Keycloak and both APIs must be running (steps 1 to 3).
 
 | Page | What it does |
 |---|---|
 | `/` | A top bar with **Log in** and **Register**. Both go to Keycloak's pages, and then on to `/movies`. |
 | `/movies` | All movies in a grid that loads more as you scroll. Below the top bar: a search box (type, then press **Enter**; empty + **Enter** shows all movies again) and a **Sort by** dropdown (newest first, which is the default, oldest first, highest or lowest rated, title A–Z or Z–A; while searching there's also best match, the default for searches). Search and sort are kept in the URL, e.g. `/movies?q=batman&sort=newest`, so reloading or going back keeps them. |
-| `/movies/<id>` | One movie: poster, title, release date, rating and vote count, genres, description, and links to its IMDb (when known) and TMDB pages. Clicking a movie in the grid opens it. |
+| `/movies/<id>` | One movie: poster, title, release date, rating and vote count, genres, description, links to its IMDb (when known) and TMDB pages, and **Mark as watched** (**Watched ✓** once marked; click again to undo). Clicking a movie in the grid opens it. |
+| `/users` | All users, by username, loading more as you scroll, with a search box (type the start of a username, then press **Enter**). |
+| `/users/<id>` | A user's profile: favourite genres, and tabs for the movies they've watched, who they follow and who follows them. Other users' profiles have **Follow**; on your own (`/users/me`), **Edit** picks your favourite genres from all 20. |
 
-Every page under `/movies` needs a login: opening one while logged out goes to Keycloak's login page first, then back to that page. The top bar shows the logged-in user and **Log out**.
+Every page under `/movies` and `/users` needs a login: opening one while logged out goes to Keycloak's login page first, then back to that page. The top bar has **Movies** and **Users**, and on the right your username, which opens your profile, and **Log out**.
 
 **Log out** ends the Keycloak session too, so the next login asks for the password again.
 
@@ -315,11 +399,11 @@ The frontend uses [`keycloak-js`](https://www.npmjs.com/package/keycloak-js), Ke
 
 1. **Log in** or **Register** sends the browser to Keycloak's login or sign-up page.
 2. Keycloak sends the browser back to `/movies` with a one-time code, which `keycloak-js` exchanges for an access token, using PKCE.
-3. The page calls the API from the browser with `Authorization: Bearer <token>`. Before each API call, the token is renewed if it's about to expire.
+3. The pages call the APIs from the browser with `Authorization: Bearer <token>`. Before each API call, the token is renewed if it's about to expire.
 
 The token only lives in the page's memory, so reloading `/movies` goes through Keycloak again. That's quick, because Keycloak still remembers the login, so it doesn't ask for the password.
 
-The code is in `frontend/lib/keycloak.ts` (Keycloak setup) and `frontend/lib/api.ts` (API calls). Because the page calls the API from a different origin (`localhost:3000` to `localhost:8080`), the API allows that origin through CORS: `quarkus.http.cors.origins` in `application.properties`.
+The code is in `frontend/lib/keycloak.ts` (Keycloak setup) and `frontend/lib/api.ts` (calls to both APIs). Because the pages call the APIs from a different origin (`localhost:3000` to `localhost:8080` and `8081`), both APIs allow that origin through CORS: `quarkus.http.cors.origins` in their `application.properties`.
 
 ### Configuration
 
@@ -327,29 +411,33 @@ The defaults match the local setup. To point the frontend elsewhere, set these i
 
 | Variable | Default |
 |---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` |
+| `NEXT_PUBLIC_MOVIES_API_URL` | `http://localhost:8080` |
+| `NEXT_PUBLIC_PROFILES_API_URL` | `http://localhost:8081` |
 | `NEXT_PUBLIC_KEYCLOAK_URL` | `http://localhost:8180` |
 | `NEXT_PUBLIC_KEYCLOAK_REALM` | `movies` |
 | `NEXT_PUBLIC_KEYCLOAK_CLIENT_ID` | `movies-frontend` |
 
 ### Running on a remote machine
 
-If the project runs on another machine (a VM, or through IntelliJ remote development) and your browser runs on your own computer, forward ports **3000**, **8080** and **8180** to the **same port numbers** on your computer. Keycloak's login redirects and tokens name `http://localhost:8180` and `http://localhost:3000` exactly, so different local port numbers break the login.
+If the project runs on another machine (a VM, or through IntelliJ remote development) and your browser runs on your own computer, forward ports **3000**, **8080**, **8081** and **8180** to the **same port numbers** on your computer. Keycloak's login redirects and tokens name `http://localhost:8180` and `http://localhost:3000` exactly, so different local port numbers break the login.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
 | `The JAVA_HOME environment variable is not defined correctly` | Set `JAVA_HOME` as shown in [Java 27 with SDKMAN!](#java-27-with-sdkman). |
-| `Bind for 0.0.0.0:5432 failed: port is already allocated` | Another PostgreSQL is running on 5432. Stop it, or change the host port in `infra/compose.yaml` and update `%dev.quarkus.datasource.jdbc.url` in `backend/movies-service/src/main/resources/application.properties` to match. |
+| `Bind for 0.0.0.0:5432 failed: port is already allocated` | Another PostgreSQL is running on 5432. Stop it, or change the host port in `infra/compose.yaml` and update `%dev.quarkus.datasource.jdbc.url` in both services' `src/main/resources/application.properties` to match. |
 | `The container name "/postgres" is already in use` | A container named `postgres` already exists, maybe from another project. If it's this database, keep using it. Otherwise stop and remove it with `docker rm -f postgres`, which **deletes its data unless it's stored in a volume**. |
-| The API starts, but `/movies` returns no movies | The API started before the dump was restored, so Flyway created empty tables. Reset the database with `docker compose -f infra/compose.yaml down -v` (this deletes all its data) and `docker compose -f infra/compose.yaml up -d`, then restore the dump before starting the API again. |
-| The restore prints many `already exists` errors | Same cause: the API created the tables first. Reset the database as in the previous row, then restore before starting the API. |
-| The API fails at startup with `Validate failed: Migrations have failed validation` | A migration file changed after it had already run. Undo the edit, e.g. with `git checkout` on that file, and put the change in a new `V<next>__...sql` file instead. |
-| The API returns `401` even with a token | Tokens expire after 5 minutes: get a new one. If the token comes from your own app, check that it was issued by the `movies-frontend` or `movies-swagger-ui` client, and that its `iss` claim is exactly `http://localhost:8180/realms/movies`. Decoding it at [jwt.io](https://jwt.io) shows both. |
+| The movies API starts, but `/movies` returns no movies | It started before the dump was restored, so Flyway created empty tables. Reset the database with `docker compose -f infra/compose.yaml down -v` (this deletes all its data) and `docker compose -f infra/compose.yaml up -d`, then restore the dump before starting the APIs again. |
+| The restore prints many `already exists` errors | Same cause: the movies API created the tables first. Reset the database as in the previous row, then restore before starting the APIs. |
+| An API fails at startup with `Validate failed: Migrations have failed validation` | A migration file changed after it had already run. Undo the edit, e.g. with `git checkout` on that file, and put the change in a new `V<next>__...sql` file instead. |
+| An API returns `401` even with a token | Tokens expire after 5 minutes: get a new one. If the token comes from your own app, check that it was issued by the `movies-frontend` or `movies-swagger-ui` client, and that its `iss` claim is exactly `http://localhost:8180/realms/movies`. Decoding it at [jwt.io](https://jwt.io) shows both. |
 | Keycloak doesn't become `healthy`, and its logs mention `database "keycloak" does not exist` | The database volume predates Keycloak. Create the database as shown in [step 1](#1-start-the-database-and-keycloak). |
 | A change to `movies-realm.json` has no effect | The realm is only imported the first time. See [Keycloak admin console](#keycloak-admin-console). |
-| The movies page says `Couldn't load movies: Failed to fetch` | The browser couldn't reach the API. Check that it's running, and that port 8080 is forwarded if you use a remote machine. If the browser console mentions CORS, the page's origin isn't in `quarkus.http.cors.origins`. |
+| The movies page says `Couldn't load movies: Failed to fetch` | The browser couldn't reach the movies API. Check that it's running, and that port 8080 is forwarded if you use a remote machine. If the browser console mentions CORS, the page's origin isn't in `quarkus.http.cors.origins`. |
 | Log in or Register does nothing, or Keycloak's page doesn't load | The browser can't reach `http://localhost:8180`. Forward port 8180; see [Running on a remote machine](#running-on-a-remote-machine). |
 | Most movies show "No poster" | Expected: TMDB has since deleted most of the poster files the 2017 dataset points to (only about 1 in 10 still exists). |
-| Port 8080 or 3000 is in use | Run the API with `./mvnw quarkus:dev -Dquarkus.http.port=8081`, or the frontend with `npm run dev -- -p 3001`. |
+| profiles-service fails at startup with `relation "movies.genre" does not exist` | The movie data isn't loaded. Restore the dump (see [Load the data](#load-the-data-first-time-only)), then start it again. |
+| The Users page or a profile says `Failed to fetch` | The profiles API isn't reachable: start it (step 3), and forward port 8081 if you use a remote machine. |
+| The profiles API returns `401` even though the movies API works | Your token predates the `profiles-service` audience. Run `./infra/keycloak/add-profiles-service.sh` if you haven't, then log out and in again. |
+| Port 8080, 8081 or 3000 is in use | Find what's using it with `ss -ltnp \| grep :<port>` (or `lsof -i :<port>`), often an API or frontend you started earlier, and stop it. To use another port instead, start the API with `-Dquarkus.http.port=<port>` or the frontend with `npm run dev -- -p <port>`, and update the matching settings from [Project configuration](#project-configuration). |

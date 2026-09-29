@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getMovie, type Movie } from "@/lib/api";
-import { useKeycloak } from "../auth-gate";
+import { getMovie, isWatched, setWatched, type Movie } from "@/lib/api";
+import { useKeycloak } from "../../auth-gate";
 import { Poster } from "../movie-card";
 
 type State = { status: "loading" } | { status: "not-found" } | { status: "error"; message: string } | { status: "loaded"; movie: Movie };
@@ -70,6 +70,7 @@ function MovieInfo({ movie }: { movie: Movie }) {
         <p className="leading-relaxed">{movie.description ?? "No description available."}</p>
 
         <div className="flex flex-wrap gap-3 text-sm">
+          <WatchedButton movieId={movie.id} />
           {movie.imdbId && (
             <ExternalLink href={`https://www.imdb.com/title/${movie.imdbId}/`}>IMDb</ExternalLink>
           )}
@@ -77,6 +78,42 @@ function MovieInfo({ movie }: { movie: Movie }) {
         </div>
       </div>
     </article>
+  );
+}
+
+/** "Mark as watched", or "Watched ✓" (click to undo), for the logged-in user's profile. */
+function WatchedButton({ movieId }: { movieId: number }) {
+  const keycloak = useKeycloak();
+  const [watched, setWatchedState] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    isWatched(keycloak, movieId)
+      .then(setWatchedState)
+      .catch(() => setWatchedState(null));
+  }, [keycloak, movieId]);
+
+  if (watched === null) return null;
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      await setWatched(keycloak, movieId, !watched);
+      setWatchedState(!watched);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={busy}
+      className={`rounded-md px-4 py-2 font-medium disabled:opacity-50 ${
+        watched ? "border border-foreground/20 hover:bg-foreground/10" : "bg-foreground text-background hover:opacity-85"
+      }`}
+    >
+      {watched ? "Watched ✓" : "Mark as watched"}
+    </button>
   );
 }
 
