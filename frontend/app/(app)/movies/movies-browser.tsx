@@ -6,13 +6,15 @@ import { listMovies, searchMovies } from "@/lib/api";
 import { useInfinitePages } from "@/lib/use-infinite-pages";
 import { useKeycloak } from "../auth-gate";
 import MovieCard from "./movie-card";
+import RecommendedRow from "./recommended-row";
 import { defaultSortKey, parseSortKey, SORT_OPTIONS, sortKeysFor, type SortKey } from "./sort-options";
 
 const PAGE_SIZE = 24;
 
 /**
- * The movies page: a search bar and sort dropdown above an infinitely scrolling grid. The search
- * and sort live in the URL (?q=...&sort=...), so they survive reloads and the back button.
+ * The movies page: a search bar and sort dropdown above an infinitely scrolling grid, with the user's
+ * "Recommended for you" on top when they aren't searching. The search and sort live in the URL
+ * (?q=...&sort=...), so they survive reloads and the back button.
  */
 export default function MoviesBrowser() {
   const searchParams = useSearchParams();
@@ -52,6 +54,7 @@ export default function MoviesBrowser() {
           </select>
         </label>
       </div>
+      {!query && <RecommendedRow />}
       {/* A new search or sort starts a fresh list: remounting resets its pages and scroll state. */}
       <MovieResults key={`${sortKey}|${query}`} query={query} sortKey={sortKey} />
     </main>

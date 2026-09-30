@@ -1,10 +1,5 @@
 -- Sample data for the test profile only.
-insert into movies.genre (genre_id, name) values (16, 'Animation'), (18, 'Drama'), (80, 'Crime');
-
-insert into movies.movie (movie_id, title, poster_path, release_date) values
-    (1, 'The Godfather', '/godfather.jpg', '1972-03-14'),
-    (2, 'Pulp Fiction', '/pulp.jpg', '1994-09-10'),
-    (3, 'Spirited Away', '/spirited.jpg', '2001-07-20');
+-- Movies and genres come from a mocked movies-service (see ProfileResourceTest).
 
 -- Ids as Keycloak would issue them (see TestUsers).
 insert into profiles.profile (profile_id, username) values

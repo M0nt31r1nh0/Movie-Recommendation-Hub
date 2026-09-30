@@ -1,6 +1,9 @@
--- Profiles live next to the movie data, in the same database, so they can reference movies and genres
--- with real foreign keys. The movies schema must exist first: restore data/movies_dump.sql before
--- starting this service.
+-- profiles-service's own database. It references movies and genres by their movies-service ids only:
+-- they live in movies-service's database, which no other service may access, so there are no foreign
+-- keys to them. The service checks ids against the movies API before storing them.
+--
+-- (This file and V2 were rewritten when profiles moved out of the movies database into their own.
+-- Flyway never ran the earlier versions against this database, so their checksums don't apply here.)
 
 -- One profile per Keycloak user, created on their first request to this service.
 CREATE TABLE profiles.profile (
@@ -14,19 +17,16 @@ CREATE INDEX idx_profile_username_prefix ON profiles.profile (lower(username) te
 
 CREATE TABLE profiles.favorite_genre (
     profile_id uuid    NOT NULL REFERENCES profiles.profile (profile_id) ON DELETE CASCADE,
-    genre_id   integer NOT NULL REFERENCES movies.genre (genre_id) ON DELETE CASCADE,
+    genre_id   integer NOT NULL,                        -- a movies-service genre id
     PRIMARY KEY (profile_id, genre_id)
 );
 
 CREATE TABLE profiles.watched_movie (
     profile_id uuid        NOT NULL REFERENCES profiles.profile (profile_id) ON DELETE CASCADE,
-    movie_id   integer     NOT NULL REFERENCES movies.movie (movie_id) ON DELETE CASCADE,
+    movie_id   integer     NOT NULL,                    -- a movies-service movie id
     watched_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (profile_id, movie_id)
 );
-
--- Deleting a movie checks this table for references; without an index that's a full scan.
-CREATE INDEX idx_watched_movie_movie ON profiles.watched_movie (movie_id);
 
 CREATE TABLE profiles.follow (
     follower_id uuid        NOT NULL REFERENCES profiles.profile (profile_id) ON DELETE CASCADE,

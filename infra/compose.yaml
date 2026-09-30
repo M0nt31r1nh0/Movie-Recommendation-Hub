@@ -1,4 +1,5 @@
 services:
+  # movies-service's database (movies), plus Keycloak's (keycloak, see init/).
   postgres:
     image: postgres:16
     container_name: postgres
@@ -18,6 +19,115 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # profiles-service's own database instance: no other service reads it.
+  profiles-db:
+    image: postgres:16
+    container_name: profiles-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PROFILES_DB_USER:-profiles}
+      POSTGRES_PASSWORD: ${PROFILES_DB_PASSWORD:-profiles}
+      POSTGRES_DB: profiles
+    ports:
+      - "5433:5432"
+    volumes:
+      - profiles_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # recommendation-service's own database instance: no other service reads it.
+  recommendations-db:
+    image: postgres:16
+    container_name: recommendations-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${RECOMMENDATIONS_DB_USER:-recommendations}
+      POSTGRES_PASSWORD: ${RECOMMENDATIONS_DB_PASSWORD:-recommendations}
+      POSTGRES_DB: recommendations
+    ports:
+      - "5434:5432"
+    volumes:
+      - recommendations_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Queue between recommendation-service and recommendation-worker: a single Kafka broker in KRaft
+  # mode (no ZooKeeper). Containers reach it at kafka:29092, programs on the host at localhost:9092.
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:29092,CONTROLLER://:29093,PLAINTEXT_HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created on first use, with 6 partitions: up to 6 workers can take jobs in parallel.
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # The default 1 GB heap is far more than this project's few small messages need.
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  # The inference engine: serves the LLM that recommendation-worker calls.
+  ollama:
+    image: ollama/ollama:0.35.0
+    container_name: ollama
+    restart: unless-stopped
+    environment:
+      # How many requests the model handles at once; more need more memory.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+      # Only one model in memory at a time, unloaded after 10 idle minutes.
+      OLLAMA_MAX_LOADED_MODELS: 1
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
+    # A 3B model at 4-bit needs about 2.5 GB; the limit keeps a bigger one from starving the machine.
+    mem_limit: ${OLLAMA_MEMORY_LIMIT:-4g}
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Downloads the chat model into the ollama volume once, then exits. Change OLLAMA_MODEL to use
+  # another model from https://ollama.com/library (and set the worker's recommendation.model to match).
+  ollama-models:
+    image: ollama/ollama:0.35.0
+    container_name: ollama-models
+    restart: "no"
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-qwen2.5:3b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.4
@@ -54,3 +164,7 @@ services:
 
 volumes:
   postgres_data:
+  profiles_data:
+  recommendations_data:
+  kafka_data:
+  ollama_models:

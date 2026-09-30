@@ -6,6 +6,8 @@ import type Keycloak from "keycloak-js";
 import { createContext, use, useEffect, useState } from "react";
 import { getProfile } from "@/lib/api";
 import { getKeycloak } from "@/lib/keycloak";
+import { startRecommendationEvents } from "@/lib/recommendation-events";
+import RecommendationToasts from "./recommendation-toasts";
 
 const KeycloakContext = createContext<Keycloak | null>(null);
 
@@ -18,7 +20,7 @@ export function useKeycloak(): Keycloak {
 
 /**
  * Makes sure the user is logged in (sending them to Keycloak's login page if not), then shows the
- * top bar and the page.
+ * top bar and the page, and listens for the user's recommendation events while they're here.
  */
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [keycloak, setKeycloak] = useState<Keycloak | null>(null);
@@ -35,6 +37,8 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
       .catch(() => setError("Couldn't reach the login server. Is Keycloak running?"));
   }, []);
 
+  useEffect(() => (keycloak ? startRecommendationEvents(keycloak) : undefined), [keycloak]);
+
   return (
     <KeycloakContext value={keycloak}>
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-foreground/10 px-6">
@@ -42,6 +46,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
           <Link href="/movies" className="text-lg font-semibold">
             Movies
           </Link>
+          <NavLink href="/recommendations">Ask AI</NavLink>
           <NavLink href="/users">Users</NavLink>
         </nav>
         {keycloak && (
@@ -58,7 +63,10 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
         )}
       </header>
       {keycloak ? (
-        children
+        <>
+          {children}
+          <RecommendationToasts />
+        </>
       ) : (
         <main className="flex-1 px-6 py-8">
           <p className={error ? "text-red-600" : "text-foreground/70"}>{error ?? "Logging in…"}</p>

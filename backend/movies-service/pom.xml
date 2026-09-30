@@ -16,6 +16,9 @@
         <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
         <quarkus.platform.version>3.39.5</quarkus.platform.version>
         <skipITs>true</skipITs>
+        <!-- Memory for the app's JVM in dev mode (./mvnw quarkus:dev), kept small so all the services fit
+             on one development machine; override with -Djvm.args="...". -->
+        <jvm.args>-Xmx256m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:ReservedCodeCacheSize=64m</jvm.args>
         <surefire-plugin.version>3.5.6</surefire-plugin.version>
     </properties>
 

@@ -56,13 +56,24 @@
             "id.token.claim": "false",
             "introspection.token.claim": "true"
           }
+        },
+        {
+          "name": "recommendation-service audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "recommendation-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
         }
       ]
     },
     {
       "clientId": "movies-swagger-ui",
       "name": "Movies APIs Swagger UI",
-      "description": "The movies-service and profiles-service Swagger UIs (dev only), so the APIs can be tried out with a real login.",
+      "description": "The Swagger UIs of movies-service, profiles-service and recommendation-service (dev only), so the APIs can be tried out with a real login.",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": true,
@@ -71,11 +82,13 @@
       "serviceAccountsEnabled": false,
       "redirectUris": [
         "http://localhost:8080/q/swagger-ui/*",
-        "http://localhost:8081/q/swagger-ui/*"
+        "http://localhost:8081/q/swagger-ui/*",
+        "http://localhost:8082/q/swagger-ui/*"
       ],
       "webOrigins": [
         "http://localhost:8080",
-        "http://localhost:8081"
+        "http://localhost:8081",
+        "http://localhost:8082"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256"
@@ -102,7 +115,100 @@
             "id.token.claim": "false",
             "introspection.token.claim": "true"
           }
+        },
+        {
+          "name": "recommendation-service audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "recommendation-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
         }
+      ]
+    },
+    {
+      "clientId": "recommendation-service",
+      "name": "recommendation-service",
+      "description": "Logs in as itself (client credentials) to read profile snapshots for the background agent, and movie details. Dev secret; set a real one outside local development.",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "recommendation-service-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "profiles-service audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "profiles-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "movies-service audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "movies-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "recommendation-worker",
+      "name": "recommendation-worker",
+      "description": "Logs in as itself (client credentials) to fetch candidate movies from movies-service. Dev secret; set a real one outside local development.",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "recommendation-worker-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "movies-service audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "movies-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "profiles-reader",
+        "description": "May read any profile through profiles-service's internal endpoints (recommendation-service's service account)."
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "service-account-recommendation-service",
+      "enabled": true,
+      "serviceAccountClientId": "recommendation-service",
+      "realmRoles": [
+        "default-roles-movies",
+        "profiles-reader"
       ]
     }
   ]

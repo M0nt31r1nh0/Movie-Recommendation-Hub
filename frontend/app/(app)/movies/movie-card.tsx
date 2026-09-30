@@ -3,11 +3,11 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
-import { posterUrl, type Movie } from "@/lib/api";
+import { posterUrl, type Movie, type RecommendedMovie } from "@/lib/api";
 
-export default function MovieCard({ movie }: { movie: Movie }) {
+export default function MovieCard({ movie, className }: { movie: RecommendedMovie; className?: string }) {
   return (
-    <li>
+    <li className={className}>
       <Link href={`/movies/${movie.id}`} className="group flex flex-col gap-2">
         <Poster movie={movie} sizes="200px" className="transition-opacity group-hover:opacity-80" />
         <div>
