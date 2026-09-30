@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getMovie, isWatched, setWatched, type Movie } from "@/lib/api";
+import { getMovie, isOnWatchlist, isWatched, setOnWatchlist, setWatched, type Movie } from "@/lib/api";
 import { useKeycloak } from "../../auth-gate";
 import { Poster } from "../movie-card";
 
@@ -70,7 +70,10 @@ function MovieInfo({ movie }: { movie: Movie }) {
         <p className="leading-relaxed">{movie.description ?? "No description available."}</p>
 
         <div className="flex flex-wrap gap-3 text-sm">
-          <WatchedButton movieId={movie.id} />
+          <ProfileButtons movieId={movie.id} />
+        </div>
+
+        <div className="flex flex-wrap gap-3 text-sm">
           {movie.imdbId && (
             <ExternalLink href={`https://www.imdb.com/title/${movie.imdbId}/`}>IMDb</ExternalLink>
           )}
@@ -81,38 +84,75 @@ function MovieInfo({ movie }: { movie: Movie }) {
   );
 }
 
-/** "Mark as watched", or "Watched ✓" (click to undo), for the logged-in user's profile. */
-function WatchedButton({ movieId }: { movieId: number }) {
+/**
+ * The logged-in user's "Mark as watched" and "Watch later" buttons for this movie. Each shows its
+ * state ("Watched ✓", "On your watchlist ✓") and undoes it when clicked again. Marking a movie as
+ * watched takes it off the watchlist.
+ */
+function ProfileButtons({ movieId }: { movieId: number }) {
   const keycloak = useKeycloak();
-  const [watched, setWatchedState] = useState<boolean | null>(null);
+  const [state, setState] = useState<{ watched: boolean; onWatchlist: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    isWatched(keycloak, movieId)
-      .then(setWatchedState)
-      .catch(() => setWatchedState(null));
+    Promise.all([isWatched(keycloak, movieId), isOnWatchlist(keycloak, movieId)])
+      .then(([watched, onWatchlist]) => setState({ watched, onWatchlist }))
+      .catch(() => setState(null)); // the profiles API is down: just don't show the buttons
   }, [keycloak, movieId]);
 
-  if (watched === null) return null;
-  const toggle = async () => {
+  if (state === null) return null;
+  const run = async (change: () => Promise<void>, next: { watched: boolean; onWatchlist: boolean }) => {
     setBusy(true);
     try {
-      await setWatched(keycloak, movieId, !watched);
-      setWatchedState(!watched);
+      await change();
+      setState(next);
     } finally {
       setBusy(false);
     }
   };
+  const toggleWatched = () =>
+    run(() => setWatched(keycloak, movieId, !state.watched), {
+      watched: !state.watched,
+      onWatchlist: state.watched ? state.onWatchlist : false,
+    });
+  const toggleWatchlist = () =>
+    run(() => setOnWatchlist(keycloak, movieId, !state.onWatchlist), { ...state, onWatchlist: !state.onWatchlist });
+
+  return (
+    <>
+      <ToggleButton on={state.watched} disabled={busy} onClick={toggleWatched} labels={["Mark as watched", "Watched ✓"]} />
+      <ToggleButton
+        on={state.onWatchlist}
+        disabled={busy}
+        onClick={toggleWatchlist}
+        labels={["Watch later", "On your watchlist ✓"]}
+      />
+    </>
+  );
+}
+
+function ToggleButton({
+  on,
+  disabled,
+  onClick,
+  labels: [offLabel, onLabel],
+}: {
+  on: boolean;
+  disabled: boolean;
+  onClick: () => void;
+  labels: [string, string];
+}) {
   return (
     <button
       type="button"
-      onClick={toggle}
-      disabled={busy}
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={on}
       className={`rounded-md px-4 py-2 font-medium disabled:opacity-50 ${
-        watched ? "border border-foreground/20 hover:bg-foreground/10" : "bg-foreground text-background hover:opacity-85"
+        on ? "border border-foreground/20 hover:bg-foreground/10" : "bg-foreground text-background hover:opacity-85"
       }`}
     >
-      {watched ? "Watched ✓" : "Mark as watched"}
+      {on ? onLabel : offLabel}
     </button>
   );
 }

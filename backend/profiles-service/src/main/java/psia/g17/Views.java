@@ -18,16 +18,22 @@ public final class Views {
     }
 
     /**
-     * @param me           whether this is the logged-in user's own profile
-     * @param followedByMe whether the logged-in user follows this profile
+     * @param watchlistCount how many movies are on the watchlist; only on your own profile (null otherwise),
+     *                       since only its owner sees a watchlist
+     * @param me             whether this is the logged-in user's own profile
+     * @param followedByMe   whether the logged-in user follows this profile
      */
     public record ProfileView(UUID id, String username, Instant createdAt, List<GenreView> favoriteGenres,
-                              long watchedCount, long followingCount, long followersCount,
+                              long watchedCount, Long watchlistCount, long followingCount, long followersCount,
                               boolean me, boolean followedByMe) {
     }
 
     public record WatchedMovieView(int movieId, String title, String posterPath, LocalDate releaseDate,
                                    Instant watchedAt) {
+    }
+
+    public record WatchlistEntryView(int movieId, String title, String posterPath, LocalDate releaseDate,
+                                     Instant addedAt) {
     }
 
     public record ErrorView(String error) {

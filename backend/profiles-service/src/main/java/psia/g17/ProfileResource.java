@@ -27,6 +27,7 @@ import psia.g17.Views.GenreView;
 import psia.g17.Views.ProfileSummary;
 import psia.g17.Views.ProfileView;
 import psia.g17.Views.WatchedMovieView;
+import psia.g17.Views.WatchlistEntryView;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -35,9 +36,10 @@ import java.util.UUID;
 import java.util.function.Function;
 
 /**
- * User profiles: favourite genres, watched movies and follows. Every endpoint needs a Keycloak access
- * token. Anyone logged in can read any profile; changes go through {@code /profiles/me/...}, so users
- * only ever change their own. Wherever a path takes a profile id, {@code me} means the logged-in user.
+ * User profiles: favourite genres, watched movies, a watch-later list and follows. Every endpoint needs a
+ * Keycloak access token. Anyone logged in can read any profile, except its watchlist, which only its
+ * owner sees; changes go through {@code /profiles/me/...}, so users only ever change their own. Wherever
+ * a path takes a profile id, {@code me} means the logged-in user.
  */
 @Path("/profiles")
 @Produces(MediaType.APPLICATION_JSON)
@@ -112,18 +114,17 @@ public class ProfileResource {
         return new WatchedMovieView(w.movie.id, w.movie.title, w.movie.posterPath, w.movie.releaseDate, w.watchedAt);
     }
 
-    /** Marks a movie as seen. Idempotent: marking it again keeps the original date. */
+    /**
+     * Marks a movie as seen, and takes it off the watchlist. Idempotent: marking it again keeps the
+     * original date.
+     */
     @PUT
     @Path("/me/watched/{movieId}")
     @Transactional
     public void markWatched(@PathParam("movieId") int movieId) {
-        if (MovieRef.findById(movieId) == null) throw error(Response.Status.NOT_FOUND, "No movie with id " + movieId);
-        em.createNativeQuery("""
-                        INSERT INTO profiles.watched_movie (profile_id, movie_id) VALUES (:profile, :movie)
-                        ON CONFLICT DO NOTHING""")
-                .setParameter("profile", currentUser.profileId())
-                .setParameter("movie", movieId)
-                .executeUpdate();
+        UUID me = currentUser.profileId();
+        addMovie("watched_movie", me, movieId);
+        WatchlistEntry.delete("id.profileId = ?1 and id.movieId = ?2", me, movieId);
     }
 
     @DELETE
@@ -131,6 +132,40 @@ public class ProfileResource {
     @Transactional
     public void unmarkWatched(@PathParam("movieId") int movieId) {
         WatchedMovie.delete("id.profileId = ?1 and id.movieId = ?2", currentUser.profileId(), movieId);
+    }
+
+    /** The logged-in user's watch-later list, most recently added first. Nobody else can see it. */
+    @GET
+    @Path("/me/watchlist")
+    public PageResponse<WatchlistEntryView> watchlist(
+            @QueryParam("page") @DefaultValue("0") @Min(0) int page,
+            @QueryParam("size") @DefaultValue("20") @Min(1) @Max(100) int size) {
+        PanacheQuery<WatchlistEntry> query = WatchlistEntry.find("id.profileId", byNewest("addedAt", "id.movieId"), currentUser.profileId());
+        return page(query, page, size, this::toView);
+    }
+
+    /** Whether a movie is on the logged-in user's watchlist: 200 with the details if so, 404 if not. */
+    @GET
+    @Path("/me/watchlist/{movieId}")
+    public WatchlistEntryView watchlistEntry(@PathParam("movieId") int movieId) {
+        WatchlistEntry w = WatchlistEntry.findById(new WatchlistEntry.Key(currentUser.profileId(), movieId));
+        if (w == null) throw error(Response.Status.NOT_FOUND, "Not on the watchlist");
+        return toView(w);
+    }
+
+    /** Adds a movie to the logged-in user's watchlist. Idempotent: adding it again keeps the original date. */
+    @PUT
+    @Path("/me/watchlist/{movieId}")
+    @Transactional
+    public void addToWatchlist(@PathParam("movieId") int movieId) {
+        addMovie("watchlist", currentUser.profileId(), movieId);
+    }
+
+    @DELETE
+    @Path("/me/watchlist/{movieId}")
+    @Transactional
+    public void removeFromWatchlist(@PathParam("movieId") int movieId) {
+        WatchlistEntry.delete("id.profileId = ?1 and id.movieId = ?2", currentUser.profileId(), movieId);
     }
 
     /** The profiles a profile follows, most recently followed first. */
@@ -178,6 +213,19 @@ public class ProfileResource {
         Follow.delete("id.followerId = ?1 and id.followedId = ?2", currentUser.profileId(), findProfile(id).id);
     }
 
+    /** Adds a (profile, movie) row to {@code table}, a table keyed by both; 404 if there's no such movie. */
+    private void addMovie(String table, UUID profileId, int movieId) {
+        if (MovieRef.findById(movieId) == null) throw error(Response.Status.NOT_FOUND, "No movie with id " + movieId);
+        em.createNativeQuery("INSERT INTO profiles." + table + " (profile_id, movie_id) VALUES (:profile, :movie) ON CONFLICT DO NOTHING")
+                .setParameter("profile", profileId)
+                .setParameter("movie", movieId)
+                .executeUpdate();
+    }
+
+    private WatchlistEntryView toView(WatchlistEntry w) {
+        return new WatchlistEntryView(w.movie.id, w.movie.title, w.movie.posterPath, w.movie.releaseDate, w.addedAt);
+    }
+
     /** "me", or a profile id; 404 for anything else. */
     private Profile findProfile(String id) {
         UUID profileId;
@@ -201,6 +249,7 @@ public class ProfileResource {
                 p.id, p.username, p.createdAt,
                 p.favoriteGenres.stream().map(g -> new GenreView(g.id, g.name)).toList(),
                 WatchedMovie.count("id.profileId", p.id),
+                p.id.equals(me) ? WatchlistEntry.count("id.profileId", p.id) : null,
                 Follow.count("id.followerId", p.id),
                 Follow.count("id.followedId", p.id),
                 p.id.equals(me),

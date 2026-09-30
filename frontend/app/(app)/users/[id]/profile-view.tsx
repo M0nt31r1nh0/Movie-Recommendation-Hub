@@ -8,6 +8,7 @@ import {
   listFollowing,
   listGenres,
   listWatched,
+  listWatchlist,
   setFavoriteGenres,
   setFollowing,
   type Genre,
@@ -24,7 +25,7 @@ type State =
   | { status: "error"; message: string }
   | { status: "loaded"; profile: Profile };
 
-type Tab = "watched" | "following" | "followers";
+type Tab = "watched" | "watchlist" | "following" | "followers";
 
 /** A user's profile. `id` is a profile id, or "me" for the logged-in user. */
 export default function ProfileView({ id }: { id: string }) {
@@ -58,6 +59,8 @@ export default function ProfileView({ id }: { id: string }) {
   const { profile } = state;
   const tabs: { key: Tab; label: string }[] = [
     { key: "watched", label: `Watched · ${profile.watchedCount}` },
+    // Only on your own profile: nobody else can see your watchlist.
+    ...(profile.watchlistCount !== null ? [{ key: "watchlist" as const, label: `Watch later · ${profile.watchlistCount}` }] : []),
     { key: "following", label: `Following · ${profile.followingCount}` },
     { key: "followers", label: `Followers · ${profile.followersCount}` },
   ];
@@ -97,6 +100,7 @@ export default function ProfileView({ id }: { id: string }) {
       </div>
       <div className="pt-4">
         {tab === "watched" && <WatchedMovies key={profile.id} profileId={profile.id} me={profile.me} />}
+        {tab === "watchlist" && <Watchlist />}
         {tab === "following" && <Following key={profile.id} profileId={profile.id} me={profile.me} />}
         {tab === "followers" && <Followers key={profile.id} profileId={profile.id} me={profile.me} />}
       </div>
@@ -251,6 +255,37 @@ function WatchedMovies({ profileId, me }: { profileId: string; me: boolean }) {
         <p className="text-foreground/70">
           {me ? "Nothing yet: use “Mark as watched” on a movie's page." : "No watched movies yet."}
         </p>
+      )}
+    </>
+  );
+}
+
+/** Your own watch-later list; only you can see it. */
+function Watchlist() {
+  const keycloak = useKeycloak();
+  const fetchPage = useCallback((page: number) => listWatchlist(keycloak, { page, size: 24 }), [keycloak]);
+  const { items: movies, total, loading, error, sentinelRef } = useInfinitePages(fetchPage);
+  return (
+    <>
+      <p className="mb-4 text-sm text-foreground/60">Only you can see this list. Movies leave it when you mark them as watched.</p>
+      <ul className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-6">
+        {movies.map((movie) => (
+          <li key={movie.movieId}>
+            <Link href={`/movies/${movie.movieId}`} className="group flex flex-col gap-2">
+              <Poster movie={movie} sizes="180px" className="transition-opacity group-hover:opacity-80" />
+              <div>
+                <h3 className="text-sm font-medium leading-snug group-hover:underline">{movie.title}</h3>
+                <p className="text-xs text-foreground/60">Added {formatDate(movie.addedAt)}</p>
+              </div>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      <div ref={sentinelRef} className="h-px" />
+      {loading && <p className="py-6 text-center text-sm text-foreground/60">Loading…</p>}
+      {error && <p className="py-6 text-red-600">Couldn&apos;t load your watchlist: {error}</p>}
+      {!loading && !error && total === 0 && (
+        <p className="text-foreground/70">Nothing yet: use “Watch later” on a movie&apos;s page.</p>
       )}
     </>
   );

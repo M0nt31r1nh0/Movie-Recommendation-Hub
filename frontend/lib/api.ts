@@ -41,6 +41,8 @@ export type Profile = ProfileSummary & {
   createdAt: string;
   favoriteGenres: Genre[];
   watchedCount: number;
+  /** Only on your own profile (null on others): only its owner sees a watchlist. */
+  watchlistCount: number | null;
   followingCount: number;
   followersCount: number;
   /** Whether this is the logged-in user's own profile. */
@@ -55,6 +57,14 @@ export type WatchedMovie = {
   posterPath: string | null;
   releaseDate: string | null;
   watchedAt: string;
+};
+
+export type WatchlistEntry = {
+  movieId: number;
+  title: string;
+  posterPath: string | null;
+  releaseDate: string | null;
+  addedAt: string;
 };
 
 // movies-service
@@ -113,8 +123,23 @@ export async function isWatched(keycloak: Keycloak, movieId: number): Promise<bo
   return (await orNullIfNotFound(request(keycloak, "GET", PROFILES_API_URL, `/profiles/me/watched/${movieId}`))) !== null;
 }
 
+/** Marks or unmarks a movie as seen. Marking it also takes it off the watchlist. */
 export function setWatched(keycloak: Keycloak, movieId: number, watched: boolean): Promise<void> {
   return request(keycloak, watched ? "PUT" : "DELETE", PROFILES_API_URL, `/profiles/me/watched/${movieId}`);
+}
+
+/** The logged-in user's watch-later list, most recently added first. */
+export function listWatchlist(keycloak: Keycloak, options: PageOptions = {}): Promise<Page<WatchlistEntry>> {
+  return request(keycloak, "GET", PROFILES_API_URL, "/profiles/me/watchlist", { params: options });
+}
+
+/** Whether the movie is on the logged-in user's watchlist. */
+export async function isOnWatchlist(keycloak: Keycloak, movieId: number): Promise<boolean> {
+  return (await orNullIfNotFound(request(keycloak, "GET", PROFILES_API_URL, `/profiles/me/watchlist/${movieId}`))) !== null;
+}
+
+export function setOnWatchlist(keycloak: Keycloak, movieId: number, onWatchlist: boolean): Promise<void> {
+  return request(keycloak, onWatchlist ? "PUT" : "DELETE", PROFILES_API_URL, `/profiles/me/watchlist/${movieId}`);
 }
 
 export function setFollowing(keycloak: Keycloak, profileId: string, following: boolean): Promise<void> {

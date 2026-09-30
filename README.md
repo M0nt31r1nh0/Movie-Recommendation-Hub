@@ -1,6 +1,6 @@
 # Movies
 
-A movie catalogue built on [The Movies Dataset](https://www.kaggle.com/datasets/rounakbanik/the-movies-dataset) (about 45,000 TMDB movies). Users register and log in through Keycloak, then browse and search movies, keep a profile of their favourite genres and the movies they've seen, and follow other users.
+A movie catalogue built on [The Movies Dataset](https://www.kaggle.com/datasets/rounakbanik/the-movies-dataset) (about 45,000 TMDB movies). Users register and log in through Keycloak, then browse and search movies, keep a profile of their favourite genres and the movies they've seen, save movies to watch later, and follow other users.
 
 | Part | Path | Stack | Port |
 |---|---|---|---|
@@ -278,7 +278,7 @@ cd backend/profiles-service
 
 It runs on `http://localhost:8081`, next to the movies API, with its Swagger UI at `http://localhost:8081/q/swagger-ui`. It needs the database, with the dump loaded, and Keycloak (step 1).
 
-Every user has a profile listing their favourite genres, the movies they've seen, and the users they follow.
+Every user has a profile listing their favourite genres, the movies they've seen, and the users they follow, plus a private watch-later list.
 
 **When profiles are created:** registering in Keycloak doesn't create a profile. The profile is created on the user's first request to this API, from their token (Keycloak user id and username), and the frontend makes that request right after login. So users show up under **Users** as soon as they log in to the app for the first time. Accounts created in the Keycloak admin console stay out of the list until their owner logs in once. A username changed in Keycloak is picked up on the user's next request.
 
@@ -291,6 +291,7 @@ Profiles live in the same database as the movies, in their own `profiles` schema
 | `profiles.profile` | One row per Keycloak user: their Keycloak user id (the token's `sub`), username and join date |
 | `profiles.favorite_genre` | Profile → `movies.genre` |
 | `profiles.watched_movie` | Profile → `movies.movie`, with when it was marked |
+| `profiles.watchlist` | Profile → `movies.movie` to watch later, with when it was added. Only the owner can see it |
 | `profiles.follow` | Profile → profile it follows, with when. Following yourself is refused |
 
 Because of the foreign keys, **the movie data must be loaded before this service first starts**; otherwise its migration fails with `relation "movies.genre" does not exist`.
@@ -299,21 +300,24 @@ Deleting a user in Keycloak doesn't delete their profile yet: that would need Ke
 
 ### Endpoints
 
-All need an access token (see [Calling the APIs yourself](#calling-the-apis-yourself)), and return `401` without one. Anyone logged in can read any profile; changes always go through `/profiles/me/...`, so users can only change their own. Wherever a path takes a profile id, `me` means the logged-in user.
+All need an access token (see [Calling the APIs yourself](#calling-the-apis-yourself)), and return `401` without one. Anyone logged in can read any profile except its watchlist, which only its owner sees; changes always go through `/profiles/me/...`, so users can only change their own. Wherever a path takes a profile id, `me` means the logged-in user.
 
 | Method | Path | Does |
 |---|---|---|
 | `GET` | `/profiles?q=<prefix>` | Profiles whose username starts with `q` (any case), or all of them, by username. `page` and `size` as for `/movies` |
-| `GET` | `/profiles/{id}` | One profile: `{ id, username, createdAt, favoriteGenres, watchedCount, followingCount, followersCount, me, followedByMe }`, or `404` |
+| `GET` | `/profiles/{id}` | One profile: `{ id, username, createdAt, favoriteGenres, watchedCount, watchlistCount, followingCount, followersCount, me, followedByMe }`, or `404`. `watchlistCount` is only set on your own profile (`null` on others) |
 | `PUT` | `/profiles/me/favorite-genres` | Replaces your favourite genres with a JSON array of genre ids, e.g. `[18, 878]`. Unknown ids return `400` |
 | `GET` | `/profiles/{id}/watched` | The movies a profile has seen, most recently marked first (paginated) |
 | `GET` | `/profiles/me/watched/{movieId}` | `200` if you've marked the movie as seen, `404` if not |
-| `PUT` / `DELETE` | `/profiles/me/watched/{movieId}` | Marks a movie as seen, or unmarks it (`204`). Unknown movies return `404` |
+| `PUT` / `DELETE` | `/profiles/me/watched/{movieId}` | Marks a movie as seen, or unmarks it (`204`). Marking it also takes it off your watchlist. Unknown movies return `404` |
+| `GET` | `/profiles/me/watchlist` | Your watch-later list, most recently added first (paginated). There's no way to read someone else's |
+| `GET` | `/profiles/me/watchlist/{movieId}` | `200` if the movie is on your watchlist, `404` if not |
+| `PUT` / `DELETE` | `/profiles/me/watchlist/{movieId}` | Adds a movie to your watchlist, or removes it (`204`). Unknown movies return `404` |
 | `GET` | `/profiles/{id}/following` | The profiles a profile follows, most recent first (paginated) |
 | `GET` | `/profiles/{id}/followers` | The profiles following a profile, most recent first (paginated) |
 | `PUT` / `DELETE` | `/profiles/me/following/{id}` | Follows or unfollows a profile (`204`). Yourself returns `400`, unknown profiles `404` |
 
-The `PUT`s are safe to repeat: marking a movie or following a user twice changes nothing. Errors come with a JSON body: `{ "error": "..." }`.
+The `PUT`s are safe to repeat: marking a movie, adding it to the watchlist or following a user twice changes nothing. Errors come with a JSON body: `{ "error": "..." }`.
 
 ### Tests
 
@@ -385,9 +389,9 @@ Open `http://localhost:3000`. Keycloak and both APIs must be running (steps 1 to
 |---|---|
 | `/` | A top bar with **Log in** and **Register**. Both go to Keycloak's pages, and then on to `/movies`. |
 | `/movies` | All movies in a grid that loads more as you scroll. Below the top bar: a search box (type, then press **Enter**; empty + **Enter** shows all movies again) and a **Sort by** dropdown (newest first, which is the default, oldest first, highest or lowest rated, title A–Z or Z–A; while searching there's also best match, the default for searches). Search and sort are kept in the URL, e.g. `/movies?q=batman&sort=newest`, so reloading or going back keeps them. |
-| `/movies/<id>` | One movie: poster, title, release date, rating and vote count, genres, description, links to its IMDb (when known) and TMDB pages, and **Mark as watched** (**Watched ✓** once marked; click again to undo). Clicking a movie in the grid opens it. |
+| `/movies/<id>` | One movie: poster, title, release date, rating and vote count, genres, description, links to its IMDb (when known) and TMDB pages, **Mark as watched** and **Watch later**. Each shows its state once clicked (**Watched ✓**, **On your watchlist ✓**) and undoes it when clicked again; marking a movie as watched also takes it off the watchlist. Clicking a movie in the grid opens it. |
 | `/users` | All users, by username, loading more as you scroll, with a search box (type the start of a username, then press **Enter**). |
-| `/users/<id>` | A user's profile: favourite genres, and tabs for the movies they've watched, who they follow and who follows them. Other users' profiles have **Follow**; on your own (`/users/me`), **Edit** picks your favourite genres from all 20. |
+| `/users/<id>` | A user's profile: favourite genres, and tabs for the movies they've watched, who they follow and who follows them. Other users' profiles have **Follow**. On your own (`/users/me`), **Edit** picks your favourite genres from all 20, and a **Watch later** tab shows your watchlist, which nobody else sees. |
 
 Every page under `/movies` and `/users` needs a login: opening one while logged out goes to Keycloak's login page first, then back to that page. The top bar has **Movies** and **Users**, and on the right your username, which opens your profile, and **Log out**.
 

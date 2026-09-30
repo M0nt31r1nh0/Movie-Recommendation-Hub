@@ -13,6 +13,7 @@ import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
 import static psia.g17.TestUsers.ALICE;
 import static psia.g17.TestUsers.BOB;
 import static psia.g17.TestUsers.CAROL;
@@ -79,6 +80,47 @@ class ProfileResourceTest {
         given().when().delete("/profiles/me/watched/3").then().statusCode(204);
         given().when().get("/profiles/me/watched/1").then().statusCode(404);
         given().when().get("/profiles/me/watched").then().body("items", empty());
+    }
+
+    @Test
+    @TestSecurity(user = "alice")
+    @OidcSecurity(claims = {@Claim(key = "sub", value = ALICE), @Claim(key = "preferred_username", value = "alice")})
+    void keepsAWatchLaterList() {
+        given().when().put("/profiles/me/watchlist/2").then().statusCode(204);
+        given().when().put("/profiles/me/watchlist/3").then().statusCode(204);
+        given().when().put("/profiles/me/watchlist/2").then().statusCode(204); // again: no change
+        given().when().get("/profiles/me/watchlist")
+                .then()
+                .statusCode(200)
+                .body("items.movieId", contains(3, 2))
+                .body("items[1].title", is("Pulp Fiction"));
+        given().when().get("/profiles/me/watchlist/2").then().statusCode(200);
+        given().when().get("/profiles/me").then().body("watchlistCount", is(2));
+
+        given().when().delete("/profiles/me/watchlist/2").then().statusCode(204);
+        given().when().delete("/profiles/me/watchlist/3").then().statusCode(204);
+        given().when().get("/profiles/me/watchlist/2").then().statusCode(404);
+        given().when().get("/profiles/me/watchlist").then().body("items", empty());
+        given().when().put("/profiles/me/watchlist/9999").then().statusCode(404);
+    }
+
+    @Test
+    @TestSecurity(user = "alice")
+    @OidcSecurity(claims = {@Claim(key = "sub", value = ALICE), @Claim(key = "preferred_username", value = "alice")})
+    void markingAMovieAsWatchedTakesItOffTheWatchlist() {
+        given().when().put("/profiles/me/watchlist/1").then().statusCode(204);
+        given().when().put("/profiles/me/watched/1").then().statusCode(204);
+        given().when().get("/profiles/me/watchlist/1").then().statusCode(404);
+
+        given().when().delete("/profiles/me/watched/1").then().statusCode(204);
+    }
+
+    @Test
+    @TestSecurity(user = "alice")
+    @OidcSecurity(claims = {@Claim(key = "sub", value = ALICE), @Claim(key = "preferred_username", value = "alice")})
+    void keepsOtherUsersWatchlistsPrivate() {
+        given().when().get("/profiles/" + BOB + "/watchlist").then().statusCode(404);
+        given().when().get("/profiles/" + BOB).then().statusCode(200).body("watchlistCount", nullValue());
     }
 
     @Test
