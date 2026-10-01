@@ -1,7 +1,9 @@
 services:
-  # movies-service's database (movies), plus Keycloak's (keycloak, see init/).
+  # movies-service's database (movies), plus Keycloak's (keycloak, see init/). PostgreSQL 16 with the
+  # pgvector extension, for searching movies by meaning. The trixie build matches postgres:16's C library,
+  # so existing databases keep their text sort order.
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16-trixie
     container_name: postgres
     restart: unless-stopped
     environment:
@@ -101,8 +103,9 @@ services:
     environment:
       # How many requests the model handles at once; more need more memory.
       OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
-      # Only one model in memory at a time, unloaded after 10 idle minutes.
-      OLLAMA_MAX_LOADED_MODELS: 1
+      # The chat model and the embedding model (movies-service's search by meaning) stay loaded together,
+      # instead of evicting each other; each is unloaded after 10 idle minutes.
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
     # A 3B model at 4-bit needs about 2.5 GB; the limit keeps a bigger one from starving the machine.
     mem_limit: ${OLLAMA_MEMORY_LIMIT:-4g}
@@ -116,15 +119,16 @@ services:
       timeout: 5s
       retries: 10
 
-  # Downloads the chat model into the ollama volume once, then exits. Change OLLAMA_MODEL to use
-  # another model from https://ollama.com/library (and set the worker's recommendation.model to match).
+  # Downloads the chat model and the embedding model into the ollama volume once, then exits. Change
+  # OLLAMA_MODEL or OLLAMA_EMBEDDING_MODEL to use others from https://ollama.com/library (and set the
+  # worker's recommendation.model, or movies-service's movies.embeddings.model, to match).
   ollama-models:
     image: ollama/ollama:0.35.0
     container_name: ollama-models
     restart: "no"
     environment:
       OLLAMA_HOST: ollama:11434
-    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-qwen2.5:3b}"]
+    entrypoint: ["sh", "-c", "ollama pull ${OLLAMA_MODEL:-qwen2.5:3b} && ollama pull ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}"]
     depends_on:
       ollama:
         condition: service_healthy

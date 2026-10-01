@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getMovie, isOnWatchlist, isWatched, setOnWatchlist, setWatched, type Movie } from "@/lib/api";
 import { useKeycloak } from "../../auth-gate";
+import BackLink from "../../back-link";
 import { Poster } from "../movie-card";
 
 type State = { status: "loading" } | { status: "not-found" } | { status: "error"; message: string } | { status: "loaded"; movie: Movie };
@@ -22,9 +22,7 @@ export default function MovieDetails({ id }: { id: string }) {
 
   return (
     <main className="flex-1 px-6 py-6">
-      <Link href="/movies" className="text-sm text-foreground/70 hover:underline">
-        ← All movies
-      </Link>
+      <BackLink fallback="/movies" />
       {state.status === "loading" && <p className="mt-6 text-foreground/70">Loading…</p>}
       {state.status === "not-found" && <p className="mt-6">There&apos;s no movie with id {id}.</p>}
       {state.status === "error" && <p className="mt-6 text-red-600">Couldn&apos;t load the movie: {state.message}</p>}

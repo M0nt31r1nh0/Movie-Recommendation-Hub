@@ -35,7 +35,8 @@ import java.util.stream.Stream;
  * <ol>
  *   <li>a typed request becomes search filters: the genres it names, the years it mentions (read by the
  *       model), and its other words as keywords;</li>
- *   <li>movies-service picks a few dozen well-regarded candidates matching the filters, or the user's
+ *   <li>movies-service picks a few dozen well-regarded candidates matching the filters (for a typed
+ *       request, closest in meaning to it), or the user's
  *       taste, leaving out movies they've watched or saved; favourite genres and movies the people they
  *       follow watched rank higher;</li>
  *   <li>up to {@code friend-candidates} more come from what the people they follow watched, if they pass
@@ -47,7 +48,7 @@ import java.util.stream.Stream;
 public class RecommendationPipeline {
 
     /** Bump when the prompts or the candidate rules change, so old recommendations count as out of date. */
-    public static final String VERSION = "p4";
+    public static final String VERSION = "p5";
     static final int RECOMMENDATIONS = 10;
     /** Recently watched and saved movies shown to the model to describe the user's taste. */
     private static final int HISTORY_SHOWN = 10;
@@ -151,7 +152,8 @@ public class RecommendationPipeline {
 
         Filters filters = job.kind() == Kind.PROMPT ? understand(job.prompt(), genres.values()) : Filters.NONE;
         Search search = search(job.kind(), filters, genres.values(), taste);
-        List<Movie> candidates = candidates(job.kind(), search, taste, favourites, friends, exclude);
+        String meaning = job.kind() == Kind.PROMPT ? job.prompt() : null;
+        List<Movie> candidates = candidates(job.kind(), search, meaning, taste, favourites, friends, exclude);
         if (candidates.isEmpty()) {
             throw new IllegalStateException("No candidate movies matched");
         }
@@ -266,10 +268,11 @@ public class RecommendationPipeline {
      * Up to {@code candidateCount} candidates, from the most specific query to looser ones, until there
      * are enough (a typed request can easily be too narrow for the catalogue); then up to
      * {@code friendCandidates} movies the people the user follows watched, if they pass the search's
-     * genre and year filters.
+     * genre and year filters. A typed request is also passed as {@code meaning}: movies-service then ranks
+     * by closeness of meaning and its keywords only add to the score, so the first query is usually enough.
      */
-    List<Movie> candidates(Kind kind, Search s, List<Integer> taste, List<Integer> favourites, Map<Integer, Integer> friends,
-                           Set<Integer> exclude) {
+    List<Movie> candidates(Kind kind, Search s, String meaning, List<Integer> taste, List<Integer> favourites,
+                           Map<Integer, Integer> friends, Set<Integer> exclude) {
         List<Search> queries = new ArrayList<>();
         if (kind == Kind.PROMPT) {
             queries.add(s);
@@ -288,23 +291,23 @@ public class RecommendationPipeline {
         for (Search q : queries.stream().distinct().toList()) {
             if (found.size() >= candidateCount) break;
             if (kind == Kind.PROMPT && isUnfiltered(q) && !found.isEmpty()) break; // don't pad a request with random picks
-            fetch(q, favourites, bonus, null, skip(exclude, found), candidateCount - found.size())
+            fetch(q, meaning, favourites, bonus, null, skip(exclude, found), candidateCount - found.size())
                     .forEach(movie -> found.putIfAbsent(movie.id(), movie));
         }
 
         List<Integer> friendsLeft = friends.keySet().stream().filter(id -> !found.containsKey(id)).limit(MAX_FRIEND_MOVIES).toList();
         if (friendCandidates > 0 && !friendsLeft.isEmpty()) {
             Search filters = new Search(s.genreIds(), s.yearFrom(), s.yearTo(), null); // keywords would be too strict here
-            fetch(filters, favourites, bonus, friendsLeft, skip(exclude, found), friendCandidates)
+            fetch(filters, meaning, favourites, bonus, friendsLeft, skip(exclude, found), friendCandidates)
                     .forEach(movie -> found.putIfAbsent(movie.id(), movie));
         }
         return List.copyOf(found.values());
     }
 
-    private List<Movie> fetch(Search q, List<Integer> favourites, List<MoviesClient.FriendWatch> bonus, List<Integer> onlyIds,
-                              List<Integer> skip, int limit) {
+    private List<Movie> fetch(Search q, String meaning, List<Integer> favourites, List<MoviesClient.FriendWatch> bonus,
+                              List<Integer> onlyIds, List<Integer> skip, int limit) {
         return movies.candidates(new CandidateQuery(nullIfEmpty(q.genreIds()), nullIfEmpty(favourites), q.yearFrom(), q.yearTo(),
-                q.text(), nullIfEmpty(bonus), onlyIds, skip, null, limit));
+                q.text(), meaning, nullIfEmpty(bonus), onlyIds, skip, null, limit));
     }
 
     Picks choose(RecommendationJob job, ProfileSnapshot profile, Map<Integer, Genre> genres, List<Movie> watched,

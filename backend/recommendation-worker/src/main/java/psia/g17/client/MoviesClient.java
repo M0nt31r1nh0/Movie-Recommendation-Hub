@@ -39,10 +39,10 @@ public interface MoviesClient {
                  List<Genre> genres) {
     }
 
-    /** See movies-service's CandidateQuery; null fields don't filter. */
+    /** See movies-service's CandidateQuery; null fields don't filter. {@code meaning} ranks by meaning. */
     record CandidateQuery(List<Integer> genreIds, List<Integer> preferredGenreIds, Integer yearFrom, Integer yearTo,
-                          String text, List<FriendWatch> friendWatchers, List<Integer> onlyIds, List<Integer> excludeIds,
-                          Integer minRatingCount, Integer limit) {
+                          String text, String meaning, List<FriendWatch> friendWatchers, List<Integer> onlyIds,
+                          List<Integer> excludeIds, Integer minRatingCount, Integer limit) {
     }
 
     record FriendWatch(int movieId, int watchers) {

@@ -58,6 +58,7 @@ class RecommendationPipelineTest {
         assertEquals(List.of(new MoviesClient.FriendWatch(20, 2)), movies.queries.get(0).friendWatchers(),
                 "friends' movies get a bonus, except ones the user already watched");
         assertTrue(movies.queries.get(0).excludeIds().containsAll(List.of(1, 5)));
+        assertNull(movies.queries.get(0).meaning(), "no request to match");
         assertEquals(10, ids.size());
         assertEquals(List.of(3, 2), ids.subList(0, 2), "the model's choices first, in its order");
         assertEquals(ids.size(), ids.stream().distinct().count(), "each movie once");
@@ -126,6 +127,7 @@ class RecommendationPipelineTest {
         assertEquals(2000, first.yearFrom());
         assertEquals(2009, first.yearTo());
         assertEquals("serial or killers", first.text(), "not \"movies\", \"about\", \"from\" or \"2000s\"");
+        assertEquals("movies about serial killers from the 2000s", first.meaning(), "the whole request, to rank by meaning");
         assertNull(first.genreIds());
     }
 

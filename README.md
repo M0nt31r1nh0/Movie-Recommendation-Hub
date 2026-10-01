@@ -8,7 +8,7 @@ A movie catalogue built on [The Movies Dataset](https://www.kaggle.com/datasets/
 | Profiles database | `infra/compose.yaml` (`profiles-db`) | PostgreSQL 16 in Docker | 5433 |
 | Recommendations database | `infra/compose.yaml` (`recommendations-db`) | PostgreSQL 16 in Docker | 5434 |
 | Message queue | `infra/compose.yaml` (`kafka`) | Apache Kafka 4 in Docker (KRaft, one broker) | 9092 |
-| Language model | `infra/compose.yaml` (`ollama`) | Ollama in Docker, with `qwen2.5:3b` | 11434 |
+| Language models | `infra/compose.yaml` (`ollama`) | Ollama in Docker, with `qwen2.5:3b` (chat) and `nomic-embed-text` (search by meaning) | 11434 |
 | Accounts and login | `infra/compose.yaml`, `infra/keycloak/` | Keycloak 26 in Docker | 8180 |
 | Movies API | `backend/movies-service/` | Java 21+, Quarkus, Hibernate ORM with Panache | 8080 |
 | Profiles API | `backend/profiles-service/` | Java 21+, Quarkus, Hibernate ORM with Panache | 8081 |
@@ -137,6 +137,7 @@ Nothing else needs configuring if you keep the defaults:
 | Recommendations database user and password | `recommendations`, `recommendations` | Set `RECOMMENDATIONS_DB_USER` or `RECOMMENDATIONS_DB_PASSWORD` before the first `docker compose up`, and change `%dev.quarkus.datasource.*` in `backend/recommendation-service/src/main/resources/application.properties` to match. |
 | Database ports | `5432` (movies), `5433` (profiles), `5434` (recommendations) | `ports` in `infra/compose.yaml`, and `%dev.quarkus.datasource.jdbc.url` in the matching service's `application.properties` |
 | The language model | `qwen2.5:3b` | Set `OLLAMA_MODEL` before `docker compose up` (it downloads that one), and start the worker with `RECOMMENDATION_MODEL` set to the same. See [Choosing a model](#choosing-a-model) |
+| The embedding model, for search by meaning | `nomic-embed-text` | Set `OLLAMA_EMBEDDING_MODEL` before `docker compose up`, and start movies-service with `EMBEDDING_MODEL` set to the same. Changing it embeds every movie again |
 | Ollama's memory limit, and how long an idle model stays loaded | `4g`, `10m` | `OLLAMA_MEMORY_LIMIT` and `OLLAMA_KEEP_ALIVE` before `docker compose up` |
 | Keycloak admin user and password | `admin`, `admin` | Set `KEYCLOAK_ADMIN` or `KEYCLOAK_ADMIN_PASSWORD` before the first `docker compose up` |
 | Keycloak port | `8180` | `ports` and `KC_HOSTNAME` in `infra/compose.yaml`, `%dev.quarkus.oidc.auth-server-url` in the APIs' `application.properties`, `KEYCLOAK_REALM_URL` for the recommendation services' own logins, and `NEXT_PUBLIC_KEYCLOAK_URL` for the frontend |
@@ -151,12 +152,12 @@ docker compose -f infra/compose.yaml up -d
 
 This starts these containers:
 
-- **`postgres`**, movies-service's database, on `localhost:5432`, with database `movies`, user `postgres` and password `postgres`. To use different values, set `POSTGRES_USER`, `POSTGRES_PASSWORD` or `POSTGRES_DB` before running it. The data is kept in the `postgres_data` Docker volume, so it survives restarts.
+- **`postgres`**, movies-service's database, on `localhost:5432`, with database `movies`, user `postgres` and password `postgres`. It's PostgreSQL 16 with the [pgvector](https://github.com/pgvector/pgvector) extension, for search by meaning. To use different values, set `POSTGRES_USER`, `POSTGRES_PASSWORD` or `POSTGRES_DB` before running it. The data is kept in the `postgres_data` Docker volume, so it survives restarts.
 - **`profiles-db`**, profiles-service's database, on `localhost:5433`, with database `profiles`, user `profiles` and password `profiles`, kept in the `profiles_data` volume.
 - **`recommendations-db`**, recommendation-service's database, on `localhost:5434`, with database, user and password `recommendations`, kept in the `recommendations_data` volume.
 - **`kafka`**, the queue between the recommendations API and its worker, on `localhost:9092` (containers reach it at `kafka:29092`), kept in the `kafka_data` volume.
-- **`ollama`**, which runs the language model, on `localhost:11434`. Models are kept in the `ollama_models` volume.
-- **`ollama-models`**, which downloads the model (`qwen2.5:3b`, about 2 GB) into that volume the first time, then exits. `docker logs -f ollama-models` shows the progress, and `docker exec ollama ollama list` what's downloaded. Later runs find it there and exit at once.
+- **`ollama`**, which runs the language models, on `localhost:11434`: the chat model for the worker and the embedding model for movies-service, both loaded at once. Models are kept in the `ollama_models` volume.
+- **`ollama-models`**, which downloads the models (`qwen2.5:3b`, about 2 GB, and `nomic-embed-text`, about 270 MB) into that volume the first time, then exits. `docker logs -f ollama-models` shows the progress, and `docker exec ollama ollama list` what's downloaded. Later runs find it there and exit at once.
 - **Keycloak** on `localhost:8180`, which handles user accounts and login (see [Accounts and login](#accounts-and-login)). It stores its data in its own `keycloak` database, in the `postgres` server, and needs about 30 seconds to start. `docker ps` shows it as `healthy` when it's ready.
 
 The `keycloak` database is created automatically, by `infra/init/01-keycloak.sql`, but only when the `postgres_data` volume is new. **If your database volume existed before Keycloak was added**, create it once by hand, then start Keycloak (and the other containers that didn't exist yet when you set up):
@@ -165,6 +166,8 @@ The `keycloak` database is created automatically, by `infra/init/01-keycloak.sql
 docker exec -i postgres psql -U postgres < infra/init/01-keycloak.sql
 docker compose -f infra/compose.yaml up -d
 ```
+
+**If your `postgres` container was created before search by meaning**, it runs the plain `postgres:16` image. `docker compose -f infra/compose.yaml up -d postgres` recreates it with `pgvector/pgvector:pg16-trixie` and keeps its volume, so no data is lost. That image is built on the same Debian release as `postgres:16`, so text keeps sorting the same way; the `pg16` tag without `-trixie` is built on an older one, which would leave existing text indexes out of order.
 
 ### Load the data (first time only)
 
@@ -218,10 +221,11 @@ The service manages schema changes with [Flyway](https://documentation.red-gate.
 | `V3__movie_title_fuzzy_search.sql` | Enables the `pg_trgm` extension and adds a trigram index on `title`, for typo-tolerant search. |
 | `V4__movie_imdb_id.sql` | Adds `imdb_id` to `movies.movie`, filled from the dump's CSV staging table (45,413 of 45,430 movies have one). |
 | `V5__movie_accent_insensitive_search.sql` | Enables the `unaccent` extension and rebuilds the search columns and the trigram index without accents. The rebuilt columns only hold values computed from title and description, so no data is lost. |
+| `V6__movie_embeddings.sql` | Enables the `vector` extension and adds `movies.movie_embedding`, each movie's vector for search by meaning (see [Search by meaning](#search-by-meaning)), filled in the background. |
 
 The migrations only add to the schema; none of them drops anything. The first start after restoring the dump takes about 15 extra seconds while V2 to V5 fill in the new columns for all 45,430 movies. After that, startup skips them.
 
-To change the schema, **add a new file** with the next version number, e.g. `V6__add_movie_runtime.sql`. Never edit a migration that has already run anywhere: Flyway compares every applied file with its recorded checksum, and refuses to start if one changed.
+To change the schema, **add a new file** with the next version number, e.g. `V7__add_movie_runtime.sql`. Never edit a migration that has already run anywhere: Flyway compares every applied file with its recorded checksum, and refuses to start if one changed.
 
 Hibernate doesn't change the schema at all. In dev and tests, it only checks at startup that the Java entities match the tables.
 
@@ -233,7 +237,7 @@ Hibernate doesn't change the schema at all. In dev and tests, it only checks at 
 | `GET` | `/movies/search` | `q`: required, up to 200 characters<br>`page`, `size`: as for `/movies`<br>`sort`: `relevance` (default), `id`, `title`, `rating` or `releaseDate`<br>`order`: `asc` (default) or `desc`; ignored for `relevance` | A page of matching movies, best matches first unless `sort` names a field |
 | `GET` | `/movies/{id}` | | One movie, or `404` |
 | `GET` | `/movies/batch` | `ids`: repeated, up to 100, e.g. `?ids=238&ids=27205` | Those movies, in the order asked for; unknown ids are left out. Used by the other services |
-| `POST` | `/movies/candidates` | A JSON body: `genreIds`, `preferredGenreIds`, `yearFrom`, `yearTo`, `text`, `friendWatchers` (`[{ movieId, watchers }]`), `onlyIds`, `excludeIds` (up to 5,000), `minRatingCount` (default 50), `limit` (default 40), all optional | The best-scoring movies for a recommendation (see [How the worker chooses](#how-the-worker-chooses)). Used by recommendation-worker |
+| `POST` | `/movies/candidates` | A JSON body: `genreIds`, `preferredGenreIds`, `yearFrom`, `yearTo`, `text`, `meaning` (a request in plain words, to rank by meaning), `friendWatchers` (`[{ movieId, watchers }]`), `onlyIds`, `excludeIds` (up to 5,000), `minRatingCount` (default 50), `limit` (default 40), all optional | The best-scoring movies for a recommendation (see [How the worker chooses](#how-the-worker-chooses)). Used by recommendation-worker |
 | `GET` | `/genres` | | All 20 movie categories, by name: `[{ id, name }]` |
 
 All of them need an access token in an `Authorization: Bearer <token>` header. Without a valid one they return `401`; any logged-in user can use all of them. An invalid parameter returns `400`. In `/movies`, movies without a value for the sort field always come last.
@@ -267,6 +271,17 @@ By best match, results come in this order:
 4. Similar-looking titles, most similar first.
 
 Prefix and similar-title matching are skipped for queries that use search syntax (quotes, `or`, or `-word`), so an excluded word stays excluded. Descriptions are matched as English.
+
+### Search by meaning
+
+Word search only finds movies that use the request's words: "astronauts stranded far from home" finds *Home Alone* before *The Martian*. So for Ask AI, movies-service also searches by meaning (`MovieEmbeddings.java`):
+
+- **Every candidate movie gets an embedding**, a list of 768 numbers that the embedding model (`nomic-embed-text`, in Ollama) computes from its title, year, genres and description. Movies about similar things get nearby vectors, whatever words they use. They're kept in `movies.movie_embedding`.
+- **A background job fills that table**: the movies with at least 50 votes (the ones that can be candidates, about 9,100), most voted first, for up to 50 seconds a minute until all are done, and again for every movie if the model changes. It's resumable, and `MOVIES_EMBEDDINGS_BACKFILL=false` pauses it. The log says how many are left (`Embedded 16 movies with nomic-embed-text; 9078 to go`).
+- **A request's `meaning` is embedded the same way** (recent ones are remembered), and candidates are ranked by how close they are to it, then by quality. Its keywords only add a small bonus, for exact titles and names, instead of filtering. Genres, years and everything else still filter.
+- **If Ollama can't be reached**, the meaning is ignored and the keywords filter as before.
+
+How long the first run takes depends on the CPU: minutes on a machine with AVX2, but on a virtual CPU without it (`grep -c avx2 /proc/cpuinfo` prints 0) about 3 seconds a movie, some 8 hours in all, during which the chat model is slower too. Movies not embedded yet rank below those that are. On a VM, giving it the host's CPU type (in Proxmox, **Hardware → Processor → Type: host**) fixes both.
 
 ### Tests
 
@@ -397,7 +412,7 @@ There are two kinds of recommendations:
 45,000 movies are far too many for a model to read, so the worker narrows them down first (`RecommendationPipeline.java`):
 
 1. **For Ask AI, the request becomes search filters, only from what it states**: the genres it names ("scary" counts as horror, "sci-fi" as science fiction), a range of years only if it mentions a year or decade (the model turns "from the 80s" into 1980–1989), and its other words as keywords, which match titles and descriptions. Filler words ("movies", "about", "like", "from"…) never count. So "movies about serial killers from the 2000s" searches for *serial* or *killers*, released 2000–2009, and "lord of the rings" for *lord* or *rings*. The model isn't asked for genres or keywords: a small model asked for a field fills it in, with years, genres or words nobody asked for. A vague request ("something good") falls back to the user's taste.
-2. **movies-service picks 30 candidates** (`POST /movies/candidates`) that match the filters, or the user's genres for Recommended for you, leaving out what the user has watched or saved and movies with fewer than 50 votes. They're ranked by a quality score, the rating weighted by the number of votes (so a 9.0 from 3 votes doesn't beat an 8.3 from 20,000), plus bonuses: 0.3 for each genre in common, 0.3 more for each favourite genre, more for matching keywords, and 0.2 for each of the 20 most recently followed people who watched it (up to 0.6). If too few match, the filters are loosened step by step.
+2. **movies-service picks 30 candidates** (`POST /movies/candidates`) that match the filters, or the user's genres for Recommended for you, leaving out what the user has watched or saved and movies with fewer than 50 votes. For Ask AI, they're the movies closest in meaning to the request (see [Search by meaning](#search-by-meaning)), then the best rated. Otherwise they're ranked by a quality score, the rating weighted by the number of votes (so a 9.0 from 3 votes doesn't beat an 8.3 from 20,000), plus bonuses: 0.3 for each genre in common, 0.3 more for each favourite genre, and 0.2 for each of the 20 most recently followed people who watched it (up to 0.6). If too few match, the filters are loosened step by step.
 3. **Up to 20 more are movies the people the user follows watched**, if they pass the same filters. The model is told how many of them watched each.
 4. **The model chooses ten of the candidates**, reading their descriptions to match the request. Its answer must follow a JSON schema that only allows the candidates' ids, so it can't make movies up; anything else is dropped, and if it chooses fewer than ten, the best-ranked candidates fill the gaps.
 
@@ -565,7 +580,7 @@ Open `http://localhost:3000`. Keycloak and the movies and profiles APIs must be 
 |---|---|
 | `/` | A top bar with **Log in** and **Register**. Both go to Keycloak's pages, and then on to `/movies`. |
 | `/movies` | **Recommended for you** on top: a row of ten movies picked for you. The first set takes a few minutes and appears on its own when it's ready. After that, it's remade in the background whenever your profile, or what the people you follow watched, changes, usually within 10 minutes plus the model's time, and the row updates itself. Below it, all movies in a grid that loads more as you scroll. Below the top bar: a search box (type, then press **Enter**; empty + **Enter** shows all movies again) and a **Sort by** dropdown (newest first, which is the default, oldest first, highest or lowest rated, title A–Z or Z–A; while searching there's also best match, the default for searches). Search and sort are kept in the URL, e.g. `/movies?q=batman&sort=newest`, so reloading or going back keeps them. |
-| `/movies/<id>` | One movie: poster, title, release date, rating and vote count, genres, description, links to its IMDb (when known) and TMDB pages, **Mark as watched** and **Watch later**. Each shows its state once clicked (**Watched ✓**, **On your watchlist ✓**) and undoes it when clicked again; marking a movie as watched also takes it off the watchlist. Clicking a movie in the grid opens it. |
+| `/movies/<id>` | One movie: poster, title, release date, rating and vote count, genres, description, links to its IMDb (when known) and TMDB pages, **Mark as watched** and **Watch later**. Each shows its state once clicked (**Watched ✓**, **On your watchlist ✓**) and undoes it when clicked again; marking a movie as watched also takes it off the watchlist. Clicking a movie in the grid opens it, and **← Back** (or the browser's back button) returns to the page you came from as you left it: the same search, sort, loaded movies and scroll position, or the Ask AI answer you had open. |
 | `/recommendations` | **Ask AI**: describe what you feel like watching, press **Ask** (or **Enter**), and get ten movies you haven't watched or saved. It takes a few minutes; you can leave the page meanwhile, and a notification says when it's ready or why it failed. One request at a time: the box is disabled while one is being prepared. On the left, your last five requests; click one to see its answer again. |
 | `/users` | All users, by username, loading more as you scroll, with a search box (type the start of a username, then press **Enter**). |
 | `/users/<id>` | A user's profile: favourite genres, and tabs for the movies they've watched, who they follow and who follows them. Other users' profiles have **Follow**. On your own (`/users/me`), **Edit** picks your favourite genres from all 20, and a **Watch later** tab shows your watchlist, which nobody else sees. |

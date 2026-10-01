@@ -16,7 +16,11 @@ import java.util.List;
  * @param yearFrom          released in or after this year
  * @param yearTo            released in or before this year
  * @param text              words to match in title or description, in the search syntax of
- *                          {@code /movies/search} ({@code "haunted or ghost or house"} matches any of them)
+ *                          {@code /movies/search} ({@code "haunted or ghost or house"} matches any of them);
+ *                          with a {@code meaning}, they only add to the score instead of filtering
+ * @param meaning           a request in plain words ("astronauts stranded far from home"): movies whose
+ *                          descriptions mean something close rank first, whatever words they use (see
+ *                          MovieEmbeddings); if the embedding model can't be reached, it's ignored
  * @param friendWatchers    movies people the user follows watched, with how many of them: a bonus for
  *                          each (up to 3); they don't filter
  * @param onlyIds           only these movies (e.g. just the friends' ones), still filtered and ranked
@@ -31,6 +35,7 @@ public record CandidateQuery(
         @Min(1800) @Max(2100) Integer yearFrom,
         @Min(1800) @Max(2100) Integer yearTo,
         @Size(max = 200) String text,
+        @Size(max = 500) String meaning,
         @Size(max = 200) List<@Valid FriendWatch> friendWatchers,
         @Size(max = 200) List<Integer> onlyIds,
         @Size(max = 5000) List<Integer> excludeIds,

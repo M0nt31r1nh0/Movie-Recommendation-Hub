@@ -95,7 +95,8 @@ function MovieResults({ query, sortKey }: { query: string; sortKey: SortKey }) {
     },
     [keycloak, query, sortKey],
   );
-  const { items: movies, total, loading, error, sentinelRef } = useInfinitePages(fetchPage);
+  // Opening a movie remembers the list, so going back shows it as it was.
+  const { items: movies, total, loading, error, sentinelRef, remember } = useInfinitePages(fetchPage, `movies|${sortKey}|${query}`);
 
   return (
     <>
@@ -106,7 +107,7 @@ function MovieResults({ query, sortKey }: { query: string; sortKey: SortKey }) {
             : `${total.toLocaleString()} movies`}
         </p>
       )}
-      <ul className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-6">
+      <ul onClickCapture={remember} className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-6">
         {movies.map((movie) => (
           <MovieCard key={movie.id} movie={movie} />
         ))}

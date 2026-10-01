@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type Keycloak from "keycloak-js";
 import { createContext, use, useEffect, useState } from "react";
 import { getProfile } from "@/lib/api";
+import { recordVisit } from "@/lib/app-history";
 import { getKeycloak } from "@/lib/keycloak";
 import { startRecommendationEvents } from "@/lib/recommendation-events";
 import RecommendationToasts from "./recommendation-toasts";
@@ -38,6 +39,9 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => (keycloak ? startRecommendationEvents(keycloak) : undefined), [keycloak]);
+
+  const pathname = usePathname();
+  useEffect(() => recordVisit(pathname), [pathname]);
 
   return (
     <KeycloakContext value={keycloak}>
