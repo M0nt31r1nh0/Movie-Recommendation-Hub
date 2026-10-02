@@ -2,6 +2,8 @@
 
 A movie catalogue built on [The Movies Dataset](https://www.kaggle.com/datasets/rounakbanik/the-movies-dataset) (about 45,000 TMDB movies). Users register and log in through Keycloak, then browse and search movies, keep a profile of their favourite genres and the movies they've seen, save movies to watch later, and follow other users. A language model running on your machine recommends movies to them, from their profile and the people they follow, or from a request they type, like "a horror movie from the 80s".
 
+It runs in two ways: **on your own machine**, with the infrastructure in Docker Compose and each service started by hand (the [Quick start](#quick-start) below), or **in Google Cloud**, on a self-hosted Kubernetes cluster that Terraform and Ansible create and deploy from nothing ([Deploy to Google Cloud](#deploy-to-google-cloud), with the full guide in [infra/README.md](infra/README.md)).
+
 | Part | Path | Stack | Port |
 |---|---|---|---|
 | Movies database | `infra/compose.yaml` (`postgres`), `data/` | PostgreSQL 16 in Docker | 5432 |
@@ -34,7 +36,23 @@ docker exec -i postgres psql -U postgres -d movies < data/movies_dump.sql     # 
 
 Then open `http://localhost:3000` and register. The numbered sections below explain each step.
 
-To deploy everything to a Kubernetes cluster in Google Cloud instead (Terraform, Ansible, kubeadm, NGINX in front, Prometheus and Grafana), see [infra/README.md](infra/README.md).
+## Deploy to Google Cloud
+
+The same system, on a Kubernetes cluster in Google Cloud: 1 control-plane and 2 worker VMs (kubeadm, containerd, Calico), with NGINX as the only public entry point (HTTPS), Kafka with 3 brokers, one PostgreSQL per service, Ollama, Keycloak, and Prometheus and Grafana monitoring all of it. [infra/README.md](infra/README.md) explains every step, what's exposed and why, and how to fix what can go wrong. In short, from `infra/`:
+
+**Once:** a Google Cloud project with billing, a service account key for Terraform, and a Docker Hub (or other registry) login. The exact commands are in [infra/README.md → One-time setup](infra/README.md#one-time-setup).
+
+```bash
+docker login                                              # once, to push the images
+just images docker.io/<user> v1                           # build the 5 images for linux/amd64 and push them (after code changes)
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # set gcp_project_id
+just keygen                                               # SSH key for the VMs
+just mgmt-start                                           # the management container (Terraform, Ansible, kubectl)
+just mgmt                                                 # a shell in it, then:
+just all                                                  # VMs + Kubernetes + platform + application, ~25 minutes
+```
+
+Set `image_registry` and `image_tag` in `infra/ansible/group_vars/all.yml` to what you pushed. At the end, `just all` prints the application's address (`https://<static IP>`), Grafana's (`/grafana`) and Keycloak's admin console (`/auth/admin`); the passwords are in `infra/ansible/.secrets/`. **When you're done, `just destroy`**: the VMs cost about 0.40 USD an hour while they exist.
 
 ## Install and configure
 
@@ -641,6 +659,20 @@ Each backend service keeps its Java code in `src/main/java/psia/g17/`, split int
 | `health` | Health checks |
 
 A service only has the packages it needs. Tests mirror the same packages under `src/test/java/psia/g17/`.
+
+Each service also exposes Prometheus metrics at `/q/metrics` (Micrometer): HTTP requests per endpoint, the JVM, the database pool and the Kafka clients. The worker adds `recommendation_llm_requests_seconds` and `recommendation_llm_tokens_total`, measured from Ollama's answers, since Ollama has no metrics of its own.
+
+The deployment lives next to the code:
+
+| Path | Contents |
+|---|---|
+| `backend/Dockerfile` | Builds any of the four Quarkus services' images from source: `docker build -f backend/Dockerfile backend/<service>` |
+| `frontend/Dockerfile` | The frontend's image (Next.js standalone server), calling the APIs at `/api` and Keycloak at `/auth` on its own origin |
+| `infra/compose.yaml`, `infra/keycloak/`, `infra/init/` | The local infrastructure, and the Keycloak realm both setups import |
+| `infra/terraform/` | Google Cloud: network, firewall, static IP, VMs |
+| `infra/ansible/` | Playbooks that install Kubernetes and deploy everything onto it, and their settings (`group_vars/all.yml`) |
+| `infra/k8s/` | The Kubernetes manifests (templates Ansible fills in) and Grafana's dashboard |
+| `infra/mgmt/`, `infra/justfile`, `infra/build-images.sh` | The management container, the deployment's commands, and the image build |
 
 ## Troubleshooting
 

@@ -48,12 +48,69 @@ The APIs sit under `/api` because the frontend's pages also use `/movies`, `/rec
 
 Keycloak's browser library refuses to work over plain HTTP (it needs the browser's Web Crypto API, which only exists on HTTPS pages), so NGINX always serves HTTPS. Without a certificate of your own, the playbook makes a self-signed one for the static IP: the browser warns once, and works after you accept it. See [Using a real certificate](#using-a-real-certificate).
 
-## What you need
+## One-time setup
 
-- **Docker** on your computer (Docker Desktop on macOS), with `just` (`brew install just`, or `apt install just`). Without `just`, run the commands from `justfile` by hand.
-- **A Google Cloud project** with billing (or education credits) and the Compute Engine API enabled.
-- **A service account key** for it: IAM & Admin → Service accounts → create one with the *Compute Admin* role → Keys → Add key → JSON. Save it as `infra/terraform/credentials.json`. It's ignored by git; never commit it.
-- **A container registry** the VMs can pull from: Docker Hub, GitHub's, or the group's GitLab registry (private: see `image_pull_secret` below).
+Everything here is done once per person (or per Google Cloud project). The commands are for macOS with [Homebrew](https://brew.sh); on Linux, install the same tools with your package manager.
+
+### Tools on your computer
+
+- **Docker Desktop**, started (the whale icon in the menu bar). It builds the images and runs the management container; nothing else is installed locally.
+- **just**, which runs the commands in `infra/justfile`: `brew install just`. Without it, copy the commands from `justfile` by hand.
+- **Google Cloud CLI**, only for the setup below: `brew install --cask gcloud-cli`. Homebrew puts it in `/opt/homebrew/share/google-cloud-sdk/bin`: add that to your `PATH`, or call it by that path.
+
+### A Google Cloud project for Terraform
+
+Log in with the Google account that has the credits (this opens the browser):
+
+```bash
+gcloud auth login
+```
+
+Create a project for the deployment, with billing, and the APIs it uses. Project IDs are global: pick a unique one, e.g. with a random suffix.
+
+```bash
+PROJECT=psia26-g17-$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)
+gcloud projects create $PROJECT --name=psia26-g17
+gcloud billing accounts list                                     # the ACCOUNT_ID of the billing account with the credits
+gcloud billing projects link $PROJECT --billing-account=<ACCOUNT_ID>
+gcloud services enable compute.googleapis.com --project $PROJECT
+```
+
+Create the service account Terraform uses, and its key, in `infra/terraform/credentials.json` (ignored by git: **never commit it**):
+
+```bash
+gcloud iam service-accounts create terraform --display-name="Terraform (g17 deployment)" --project $PROJECT
+gcloud projects add-iam-policy-binding $PROJECT --condition=None \
+  --member=serviceAccount:terraform@$PROJECT.iam.gserviceaccount.com --role=roles/compute.admin
+gcloud iam service-accounts keys create terraform/credentials.json \
+  --iam-account=terraform@$PROJECT.iam.gserviceaccount.com
+```
+
+(The same in the console: IAM & Admin → Service accounts → Create, role *Compute Admin*, then Keys → Add key → JSON.) If `add-iam-policy-binding` says the service account doesn't exist, wait a few seconds and run it again: new accounts take a moment to appear.
+
+Tell Terraform which project, and make the SSH key it installs on the VMs:
+
+```bash
+echo "gcp_project_id = \"$PROJECT\"" > terraform/terraform.tfvars    # see terraform.tfvars.example for the other settings
+just keygen                                                            # ssh/id_ed25519, ignored by git
+```
+
+### A registry for the images
+
+The cluster pulls the five application images from a registry. The project uses **Docker Hub**, with public repositories, so the VMs need no credentials to pull them. Pushing needs an account: create one at [hub.docker.com](https://hub.docker.com), then once:
+
+```bash
+docker login -u <user>
+```
+
+Docker Hub creates each repository on its first push, public by default. Then set the same place in `ansible/group_vars/all.yml`:
+
+```yaml
+image_registry: docker.io/<user>
+image_tag: v1
+```
+
+Any other registry works as well (GitHub's, the group's GitLab registry, Google's Artifact Registry). For a private one, also fill in `image_pull_secret` (server, username, and a read-only token, e.g. a GitLab deploy token with `read_registry`).
 
 ## Deploy
 
@@ -61,71 +118,87 @@ All commands run from `infra/`.
 
 ### 1. Build and push the images (on your computer)
 
+Needed the first time, and after every change to the application's code:
+
 ```bash
-docker login docker.io                    # or your registry's host
 just images docker.io/<user> v1           # or: ./build-images.sh docker.io/<user> v1
 ```
 
-This builds `movies-service`, `profiles-service`, `recommendation-service`, `recommendation-worker` and `frontend` for `linux/amd64` (the VMs' CPU, even from an ARM Mac) from source, with no Java or Node needed locally, and pushes them. The first build takes a while; later ones reuse Docker's cache.
+This builds `movies-service`, `profiles-service`, `recommendation-service`, `recommendation-worker` and `frontend` for `linux/amd64` (the VMs' CPU, even from an ARM Mac) from source, with no Java or Node needed locally, and pushes them. The first build takes several minutes (the frontend is built under emulation on an ARM Mac); later ones reuse Docker's cache. For a new version, use a new tag (`v2`) here and in `image_tag`.
 
-Then set the same registry and tag in `ansible/group_vars/all.yml`:
-
-```yaml
-image_registry: docker.io/<user>
-image_tag: v1
-```
-
-For a private registry, also fill in `image_pull_secret` (server, username, and a read-only token, e.g. a GitLab deploy token with `read_registry`).
-
-### 2. Configure
+### 2. Start the management container
 
 ```bash
-cp terraform/terraform.tfvars.example terraform/terraform.tfvars    # then set gcp_project_id
-just keygen                                                         # SSH key for the VMs, in ssh/
-```
-
-`terraform/variables.tf` lists what else can change (zone, machine types, number of workers, who may SSH in). `ansible/group_vars/all.yml` lists the software versions, models and Kafka size.
-
-### 3. Start the management container and deploy
-
-```bash
-just mgmt-start
+just mgmt-start           # builds it the first time (a few minutes)
 just mgmt                 # a shell inside it, in /root/g17/infra
+```
+
+It has Terraform, Ansible, kubectl and gcloud, with the repository mounted at `/root/g17`: files it writes (the inventory, the kubeconfig, the passwords) land in your copy of the repository.
+
+### 3. Deploy
+
+Inside the management container:
+
+```bash
 just all                  # = just infra cluster platform app
 ```
 
 Or one step at a time, which is easier to follow (and to show in the video):
 
-| Step | What it does | Takes |
+| Step | What it does | Took (2026-10-02) |
 |---|---|---|
-| `just infra` | Terraform: network, firewall, static IP, VMs; writes `ansible/inventory.ini`. Asks for confirmation | ~1 min |
-| `just cluster` | Prepares the VMs, `kubeadm init`, Calico, joins the workers, labels the edge node; saves the kubeconfig to `.kube/config` | ~5 min |
-| `just platform` | local-path-provisioner (storage), Strimzi (Kafka operator), kube-prometheus-stack (Prometheus, Grafana) | ~5 min |
-| `just app` | Databases (and the movies dump, the first time), Kafka, Ollama and its models, Keycloak, the services, the frontend, NGINX, monitoring | ~15 min the first time (the models are ~2.5 GB) |
+| `just infra` | Terraform: network, firewall, static IP, VMs; writes `ansible/inventory.ini`. Shows the plan and asks for `yes` | ~1 min |
+| `just cluster` | Prepares the VMs (containerd, kubelet, kubeadm), `kubeadm init`, Calico, joins the workers, labels the edge node; saves the kubeconfig to `.kube/config` | ~5 min |
+| `just platform` | local-path-provisioner (storage), Strimzi (Kafka operator), kube-prometheus-stack (Prometheus, Grafana) | ~4 min |
+| `just app` | Databases (and the movies dump, the first time), Kafka, Ollama and its models, Keycloak, the services, the frontend, NGINX, monitoring | ~12 min the first time (the models are ~2.5 GB) |
+
+Every step can run again: it only changes what differs (a second `just app` restarts nothing, and doesn't load the dump again).
 
 At the end, `just app` prints the addresses:
 
-- **Application:** `https://<static IP>`. Register an account there, as locally.
-- **Grafana:** `https://<static IP>/grafana`. User `admin`, password in `ansible/.secrets/grafana-admin`. The **Movies** dashboard shows request rates and latency per API, Ollama's answer times, tokens/s, CPU and memory, Kafka's backlog for the worker, the databases' connections, and the nodes.
-- **Keycloak's admin console:** `https://<static IP>/auth/admin`. User `admin`, password in `ansible/.secrets/keycloak-admin`.
+- **Application:** `https://<static IP>`.
+- **Grafana:** `https://<static IP>/grafana`, user `admin`, password from `cat ansible/.secrets/grafana-admin`. The **Movies** dashboard shows request rates and latency per API, Ollama's answer times, tokens/s, CPU and memory, Kafka's backlog for the worker, the databases' connections, and the nodes.
+- **Keycloak's admin console:** `https://<static IP>/auth/admin`, user `admin`, password from `cat ansible/.secrets/keycloak-admin`.
 - **Prometheus:** not public. On your computer (with kubectl installed), `just prometheus`, then open `http://localhost:9090`.
 
-`ansible/.secrets/` holds every password the playbooks generated (databases, Keycloak, Grafana, the two service accounts' secrets). It's ignored by git; keep it, since the deployed system uses those values.
+`ansible/.secrets/` holds every password the playbooks generated (databases, Keycloak, Grafana, the two service accounts' secrets). It's ignored by git; **keep it**, since the next `just app` must use the same values the databases and Keycloak were created with.
 
-Inside the management container, `kubectl` already points at the cluster: `kubectl get pods -A`, `kubectl -n movies logs deploy/recommendation-worker -f`, and so on.
+### 4. Check that it works
+
+1. **Open `https://<static IP>`.** The browser warns that the connection isn't private (`NET::ERR_CERT_AUTHORITY_INVALID`): that's the self-signed certificate, and expected. Click **Advanced** / **Help me understand**, then **Proceed to <IP> (unsafe)**. In Chrome-based browsers without that link, click on the page and type `thisisunsafe`. See [Using a real certificate](#using-a-real-certificate) to avoid it.
+2. **Register an account and log in**, as locally. Movies appear on `/movies`.
+3. **Ask AI** on `/recommendations`: the answer takes minutes (see [Why recommendations are slow](#why-recommendations-are-slow)), and a notification says when it's ready.
+4. **Grafana**: the Movies dashboard fills in as you use the application.
+
+From the management container, `kubectl` already points at the cluster:
+
+```bash
+kubectl get nodes                                         # 3 nodes, Ready
+kubectl -n movies get pods                                # everything Running and READY
+kubectl -n kafka get kafka                                # movies-kafka READY True
+kubectl -n movies logs deploy/recommendation-worker -f    # each recommendation, and how long Ollama took
+```
 
 ### Update
 
 - **New application code:** build with a new tag (`just images docker.io/<user> v2`), set `image_tag: v2`, then `just app`. With `image_tag: latest`, every `just app` pulls the images again.
-- **Changed manifests or settings:** `just app` (or `just platform`) again. The playbooks only change what differs.
+- **Changed manifests or settings:** `just app` (or `just platform`) again.
 
 ### Destroy
+
+**When you're done, destroy everything**, since the VMs cost about 0.40 USD an hour (~10 USD a day) while they exist:
 
 ```bash
 just destroy
 ```
 
-This deletes every resource Terraform created, including the disks: **all data is lost**. Check the Compute Engine console afterwards; anything left running keeps spending credits.
+This deletes every resource Terraform created, including the disks: **all data is lost**, including user accounts. Then check that nothing is left, in the console or with:
+
+```bash
+gcloud compute instances list --project $PROJECT     # and: disks list, addresses list
+```
+
+The project, the service account and the images on Docker Hub stay, and cost nothing. The next deploy starts again from step 3 (and step 1 only if the code changed).
 
 ## How the application is configured here
 
@@ -150,16 +223,34 @@ tls_key_file: /root/g17/infra/ansible/tls/privkey.pem
 
 Change `public_url` before the first `just app`. Keycloak's realm stores it at import, so changing it later also needs the `movies-frontend` client's URLs updated in the admin console.
 
+## Why recommendations are slow
+
+Ollama runs the model on the workers' CPUs, with no GPU. Measured on this deployment (2 × `e2-standard-4`), one Ask AI request took 4.5 minutes in all:
+
+| Step | Tokens read → written | Time |
+|---|---|---|
+| The model reads the request ("a horror movie from the 80s") | 98 → 25 | 27 s (includes loading the model into memory) |
+| It reads ~30 candidate movies with their descriptions, and picks 10 | 1,985 → 58 | 4 min |
+
+- **Reading the prompt is the slow part.** On a CPU the model must process every input token before it writes anything, and the second prompt is 20 times longer than the first.
+- **An `e2-standard-4` has 2 physical cores** (4 vCPUs with hyper-threading), and Ollama uses one thread per physical core.
+- **Right after a deploy, movies-service is embedding the movies** for search by meaning, through the same Ollama, which handles one request at a time (`OLLAMA_NUM_PARALLEL=1`). Until it finishes (about 9,000 movies, roughly an hour), recommendations wait behind its batches. The embeddings stay in the database, so `just app` again doesn't redo them; a new cluster, after `just destroy`, does.
+
+To make them faster: fewer candidates (add `RECOMMENDATION_CANDIDATES`, default 30, to the worker's `env` in `k8s/recommendation-worker.yaml.j2`), a smaller model (`ollama_chat_model: qwen2.5:1.5b`, about twice as fast, choosing less well), or bigger workers (`worker_machine_type` in `terraform.tfvars`). A GPU VM would answer in seconds, but needs GPU quota, NVIDIA drivers and the Kubernetes device plugin. The application expects the wait anyway: Ask AI answers at once and notifies the user later, and "Recommended for you" is prepared in the background.
+
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
+| `Cannot connect to the Docker daemon`, or containers stay in *Created* | Start Docker Desktop and wait until it says it's running (right after it starts, the first containers can hang: stop them and try again). |
+| `gcloud: command not found` after `brew install` | Add `/opt/homebrew/share/google-cloud-sdk/bin` to your `PATH`, or call `gcloud` by that path. |
+| `docker push`: *denied: requested access to the resource is denied* | Run `docker login -u <user>`, and check that `<user>` in the image names is your Docker Hub username. |
 | `terraform apply`: *Quota 'CPUS' exceeded* | Free-trial accounts allow 8 vCPUs. Use smaller machines (`worker_machine_type`) or fewer workers, or ask for more quota (IAM & Admin → Quotas). |
 | `terraform apply`: *zone does not have enough resources* | Pick another zone (`gcp_zone`) in `terraform.tfvars`. |
 | Ansible can't connect over SSH | The VMs need a minute after `terraform apply`. Check that `admin_cidrs` includes your address. |
 | A pod is `ImagePullBackOff` | `kubectl -n movies describe pod <pod>`: check `image_registry`/`image_tag`, that the images were pushed for `linux/amd64`, and `image_pull_secret` for a private registry. |
 | `just app` waits a long time for the models | Ollama is downloading ~2.5 GB: `kubectl -n movies logs job/ollama-models -f`. |
 | recommendation-worker is not ready | It's ready only once Ollama has the model: `kubectl -n movies logs deploy/recommendation-worker`. |
-| The browser warns about the certificate | Expected with the self-signed one: accept it once. Login fails if you don't, because Keycloak's library needs HTTPS. |
+| The browser says *Your connection is not private* | Expected with the self-signed certificate: see [Check that it works](#4-check-that-it-works) for how to proceed, or [use a real certificate](#using-a-real-certificate). |
 | Login redirects fail with *Invalid redirect uri* | The realm was imported with another `public_url`. Fix the `movies-frontend` client's URLs in the admin console. Or start Keycloak over, **deleting every user account**: `kubectl -n movies delete deployment/keycloak statefulset/keycloak-db pvc/data-keycloak-db-0`, then `just app`. |
-| Recommendations take minutes | Expected on CPUs, as locally. Use a smaller model (`ollama_chat_model: qwen2.5:1.5b`), or bigger workers. |
+| Recommendations take minutes | Expected on CPUs: see [Why recommendations are slow](#why-recommendations-are-slow). |
