@@ -1,0 +1,54 @@
+# The Next.js frontend, at {{ public_url }}/. Its pages call the APIs at /api/... and Keycloak at /auth on
+# the same origin (see frontend/Dockerfile), through NGINX.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: movies
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+{% if image_tag == 'latest' %}
+      annotations:
+        movies/deployed-at: "{{ deploy_timestamp }}"
+{% endif %}
+    spec:
+{% if image_pull_secret.server %}
+      imagePullSecrets:
+        - name: registry
+{% endif %}
+      containers:
+        - name: frontend
+          image: "{{ image_registry }}/frontend:{{ image_tag }}"
+          imagePullPolicy: Always
+          env:
+            # Listen on every interface (the runtime sets HOSTNAME to the pod's name otherwise).
+            - name: HOSTNAME
+              value: 0.0.0.0
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: movies
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 3000

@@ -1,0 +1,60 @@
+# Cluster-wide pieces the application relies on, installed once:
+#   - local-path-provisioner: the default StorageClass, so PersistentVolumeClaims (databases, Kafka,
+#     Ollama's models, Prometheus) get a folder on the node's disk;
+#   - Strimzi: the operator that runs Kafka from a Kafka resource (k8s/kafka.yaml.j2);
+#   - kube-prometheus-stack: Prometheus, Grafana, node-exporter and kube-state-metrics, plus the
+#     ServiceMonitor/PodMonitor resources the application uses to say what to scrape.
+- name: Install the platform
+  hosts: controlplane
+  vars:
+    workdir: "/home/{{ ansible_user }}/platform"
+  tasks:
+    - name: Download Helm
+      ansible.builtin.unarchive:
+        src: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+        dest: /tmp
+        remote_src: true
+        creates: /tmp/linux-amd64/helm
+
+    - name: Install Helm
+      become: true
+      ansible.builtin.copy:
+        src: /tmp/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        remote_src: true
+        mode: "0755"
+
+    - name: Create {{ workdir }}
+      ansible.builtin.file:
+        path: "{{ workdir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Install local-path-provisioner
+      ansible.builtin.command: >
+        kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ local_path_provisioner_version }}/deploy/local-path-storage.yaml
+
+    - name: Make it the default StorageClass
+      ansible.builtin.command: >
+        kubectl patch storageclass local-path
+        -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "true"}}}'
+
+    - name: Install Strimzi (watches the kafka namespace)
+      ansible.builtin.command: >
+        helm upgrade --install strimzi oci://quay.io/strimzi-helm/strimzi-kafka-operator
+        --version {{ strimzi_version }} --namespace kafka --create-namespace --wait --timeout 10m
+
+    - name: Write kube-prometheus-stack's settings
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../k8s/platform/kube-prometheus-stack.values.yaml.j2"
+        dest: "{{ workdir }}/kube-prometheus-stack.values.yaml"
+        mode: "0600"
+
+    - name: Add the prometheus-community chart repository
+      ansible.builtin.command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
+
+    - name: Install kube-prometheus-stack
+      ansible.builtin.command: >
+        helm upgrade --install monitoring prometheus-community/kube-prometheus-stack
+        --version {{ kube_prometheus_stack_version }} --namespace monitoring --create-namespace
+        --values {{ workdir }}/kube-prometheus-stack.values.yaml --wait --timeout 15m

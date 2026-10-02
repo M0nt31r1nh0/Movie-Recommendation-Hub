@@ -1,0 +1,91 @@
+# Creates the cluster with kubeadm, installs Calico (the pod network), joins the workers, and fetches the
+# kubeconfig to infra/.kube/config for kubectl in the management container. As lab 4's
+# ansible-create-cluster.yml and ansible-workers-join.yml.
+- name: Create the control plane
+  hosts: controlplane
+  become: true
+  tasks:
+    - name: Initialise the cluster
+      ansible.builtin.command: >
+        kubeadm init
+        --node-name={{ inventory_hostname }}
+        --pod-network-cidr={{ pod_network_cidr }}
+        --apiserver-advertise-address={{ private_ip }}
+        --apiserver-cert-extra-sans={{ ansible_host }}
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create ~/.kube
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        mode: "0700"
+
+    - name: Let {{ ansible_user }} use kubectl
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        remote_src: true
+        owner: "{{ ansible_user }}"
+        mode: "0600"
+
+    - name: Install Calico
+      become: false
+      ansible.builtin.command: >
+        kubectl apply --server-side --force-conflicts
+        -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+
+    - name: Get a command to join the cluster
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: join_command
+      changed_when: false
+
+- name: Join the workers
+  hosts: workers
+  become: true
+  tasks:
+    - name: Join the cluster
+      ansible.builtin.command: "{{ hostvars[groups['controlplane'][0]].join_command.stdout }} --node-name={{ inventory_hostname }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+- name: Check the cluster
+  hosts: controlplane
+  tasks:
+    - name: Wait until every node is Ready
+      ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=10m
+      changed_when: false
+
+    - name: Mark the edge node, where NGINX runs on the VM's ports 80 and 443
+      ansible.builtin.command: kubectl label node {{ edge_node }} movies/edge=true --overwrite
+      changed_when: false
+
+    - name: Read the admin kubeconfig
+      become: true
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: Create infra/.kube
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ inventory_dir }}/../.kube"
+        state: directory
+        mode: "0700"
+
+    - name: Save it for the management container, pointing at the master's public address
+      delegate_to: localhost
+      ansible.builtin.copy:
+        dest: "{{ inventory_dir }}/../.kube/config"
+        content: "{{ admin_conf.content | b64decode | regex_replace('server: https://[^:]+:6443', 'server: https://' + ansible_host + ':6443') }}"
+        mode: "0600"
+
+    - name: Show the nodes
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: nodes
+      changed_when: false
+
+    - name: Nodes
+      ansible.builtin.debug:
+        msg: "{{ nodes.stdout_lines }}"

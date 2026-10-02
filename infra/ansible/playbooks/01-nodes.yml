@@ -1,0 +1,110 @@
+# Prepares every VM for Kubernetes: kernel settings, containerd, and kubelet, kubeadm and kubectl.
+# The same steps as lab 4's ansible-k8s-install.yml, with Ansible modules instead of shell scripts, so
+# running it again changes nothing.
+- name: Prepare the nodes
+  hosts: cluster
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait until the VM accepts SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Wait for cloud-init, which holds the package lock on first boot
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted
+
+  tasks:
+    - name: Install packages
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, gpg, python3-debian, containerd, conntrack, socat]
+        update_cache: true
+
+    - name: Load the kernel modules containerd and Kubernetes networking need, now and at boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/kubernetes.conf
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Load them now
+      ansible.builtin.command: modprobe {{ item }}
+      loop: [overlay, br_netfilter]
+      changed_when: false
+
+    - name: Let the kernel route and filter bridged pod traffic
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes.conf
+        content: |
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+      register: sysctl_conf
+
+    - name: Apply it now
+      ansible.builtin.command: sysctl --system
+      when: sysctl_conf.changed
+
+    - name: Turn swap off (kubelet refuses to run with it)
+      ansible.builtin.command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+
+    - name: Keep swap off after reboots
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].*\sswap\s.*)$'
+        replace: '# \1'
+
+    - name: Create containerd's default configuration
+      ansible.builtin.shell: mkdir -p /etc/containerd && containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+      notify: Restart containerd
+
+    - name: Use systemd cgroups, like kubelet
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+      notify: Restart containerd
+
+    - name: Use the pause image this Kubernetes version expects
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: '^(\s*)sandbox(_image)? = .*$'
+        replace: '\1sandbox\2 = "registry.k8s.io/pause:3.10.1"'
+      notify: Restart containerd
+
+    - name: Add the Kubernetes package repository
+      ansible.builtin.deb822_repository:
+        name: kubernetes
+        types: deb
+        uris: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/"
+        suites: /
+        signed_by: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key"
+
+    - name: Install kubelet, kubeadm and kubectl
+      ansible.builtin.apt:
+        name: [kubelet, kubeadm, kubectl]
+        update_cache: true
+
+    - name: Hold them at this version (an upgrade needs kubeadm upgrade, not apt)
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: [kubelet, kubeadm, kubectl]
+
+    - name: Start kubelet at boot (it waits for kubeadm until then)
+      ansible.builtin.systemd_service:
+        name: kubelet
+        enabled: true

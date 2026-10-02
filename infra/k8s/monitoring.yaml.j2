@@ -1,0 +1,76 @@
+# What Prometheus scrapes, besides what kube-prometheus-stack already does (nodes, kubelets and their
+# per-container CPU and memory, which is how Ollama's usage is seen, and Kubernetes objects).
+# Prometheus runs in the cluster and reaches these on their internal Services: none of them is public.
+
+# The four Quarkus services: HTTP requests per endpoint and status, JVM, database pool, Kafka clients,
+# and the worker's recommendation_llm_* (Ollama's answer times and tokens).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: quarkus
+  namespace: movies
+spec:
+  selector:
+    matchLabels:
+      movies/monitor: quarkus
+  endpoints:
+    - port: http
+      path: /q/metrics
+      interval: 15s
+---
+# postgres_exporter, next to each database.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgres
+  namespace: movies
+spec:
+  selector:
+    matchLabels:
+      movies/monitor: postgres
+  endpoints:
+    - port: metrics
+      interval: 30s
+---
+# Keycloak's own metrics, on its management port.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: keycloak
+  namespace: movies
+spec:
+  selector:
+    matchLabels:
+      app: keycloak
+  endpoints:
+    - port: management
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nginx
+  namespace: movies
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  endpoints:
+    - port: metrics
+      interval: 15s
+---
+# Strimzi's Kafka Exporter: kafka_consumergroup_lag is the number of jobs waiting for the worker.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kafka-exporter
+  namespace: kafka
+spec:
+  selector:
+    matchLabels:
+      strimzi.io/name: movies-kafka-kafka-exporter
+  podMetricsEndpoints:
+    - port: tcp-prometheus
+      path: /metrics
+      interval: 30s

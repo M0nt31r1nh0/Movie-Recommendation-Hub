@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (not committed) and fill in.
+gcp_project_id       = "psia26-g17-XXXXXX"
+gcp_credentials_file = "credentials.json"
+
+# gcp_zone            = "europe-west4-b"
+# worker_count        = 2
+# worker_machine_type = "e2-standard-4"
+# admin_cidrs         = ["203.0.113.7/32"]

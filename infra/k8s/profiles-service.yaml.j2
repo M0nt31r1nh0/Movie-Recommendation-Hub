@@ -1,0 +1,82 @@
+# profiles-service: profiles, watched movies, watchlists and follows. Public at {{ public_url }}/api/profiles;
+# its /internal/... endpoints are only for recommendation-service, inside the cluster.
+{% set restart_annotation = image_tag == 'latest' %}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: profiles-service
+  namespace: movies
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: profiles-service
+  template:
+    metadata:
+      labels:
+        app: profiles-service
+{% if restart_annotation %}
+      # The image is "latest": a new value on every deploy makes Kubernetes pull it again.
+      annotations:
+        movies/deployed-at: "{{ deploy_timestamp }}"
+{% endif %}
+    spec:
+{% if image_pull_secret.server %}
+      imagePullSecrets:
+        - name: registry
+{% endif %}
+      containers:
+        - name: profiles-service
+          image: "{{ image_registry }}/profiles-service:{{ image_tag }}"
+          imagePullPolicy: Always
+          env:
+            # Heap at most half the memory limit (run-java.sh's default, 80%, leaves too little for the rest of the JVM).
+            - name: JAVA_MAX_MEM_RATIO
+              value: "50"
+            - name: QUARKUS_DATASOURCE_JDBC_URL
+              value: jdbc:postgresql://profiles-db:5432/profiles
+            - name: QUARKUS_DATASOURCE_USERNAME
+              value: profiles
+            - name: QUARKUS_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: movies-secrets, key: profiles-db-password }
+            - name: QUARKUS_OIDC_AUTH_SERVER_URL
+              value: "{{ keycloak_realm_url }}"
+            - name: QUARKUS_HTTP_CORS_ORIGINS
+              value: "{{ public_url }}"
+            - name: QUARKUS_REST_CLIENT_MOVIES_API_URL
+              value: http://movies-service:8080
+          ports:
+            - name: http
+              containerPort: 8080
+          # Liveness only says the JVM is up; readiness also that its database, Kafka (or Ollama) answer.
+          startupProbe:
+            httpGet: { path: /q/health/started, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: { path: /q/health/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /q/health/live, port: http }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 768Mi }
+---
+# Its metrics are at /q/metrics on the same port, scraped by Prometheus (monitoring.yaml.j2), but never
+# routed by NGINX.
+apiVersion: v1
+kind: Service
+metadata:
+  name: profiles-service
+  namespace: movies
+  labels:
+    app: profiles-service
+    movies/monitor: quarkus
+spec:
+  selector:
+    app: profiles-service
+  ports:
+    - name: http
+      port: 8080

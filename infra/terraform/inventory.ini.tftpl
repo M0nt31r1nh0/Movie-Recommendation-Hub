@@ -1,0 +1,19 @@
+# Written by Terraform (infra/terraform/inventory.tf): changes here are lost on the next terraform apply.
+
+[controlplane]
+${master.name} ansible_host=${master.public} private_ip=${master.private}
+
+[workers]
+%{ for w in workers ~}
+${w.name} ansible_host=${w.public} private_ip=${w.private}
+%{ endfor ~}
+
+[cluster:children]
+controlplane
+workers
+
+[all:vars]
+ansible_user=${ssh_user}
+# The application's address (the edge node's static IP), and the node NGINX runs on.
+public_host=${public_host}
+edge_node=${workers[0].name}

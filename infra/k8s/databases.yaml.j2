@@ -1,0 +1,117 @@
+# One PostgreSQL per service (group_vars/all.yml: databases), each with:
+#   - a PersistentVolumeClaim, so the data outlives the pod;
+#   - a postgres_exporter sidecar, whose metrics (port 9187) Prometheus scrapes;
+#   - a NetworkPolicy: only the owning service's pods may connect on 5432, and only the monitoring
+#     namespace on 9187. "A database is accessed by a single microservice", enforced by the network.
+{% for db in databases %}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ db.name }}
+  namespace: movies
+  labels:
+    app: {{ db.name }}
+    movies/monitor: postgres
+spec:
+  selector:
+    app: {{ db.name }}
+  ports:
+    - name: postgres
+      port: 5432
+    - name: metrics
+      port: 9187
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ db.name }}
+  namespace: movies
+spec:
+  serviceName: {{ db.name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ db.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ db.name }}
+        tier: database
+    spec:
+      containers:
+        - name: postgres
+          image: {{ db.image }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ db.database }}
+            - name: POSTGRES_USER
+              value: {{ db.user }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: movies-secrets, key: {{ db.name }}-password }
+            # A subfolder: the volume's root has a lost+found that initdb refuses.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, {{ db.user }}, -d, {{ db.database }}]
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+        - name: exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+          env:
+            - name: DATA_SOURCE_URI
+              value: localhost:5432/{{ db.database }}?sslmode=disable
+            - name: DATA_SOURCE_USER
+              value: {{ db.user }}
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef: { name: movies-secrets, key: {{ db.name }}-password }
+          ports:
+            - name: metrics
+              containerPort: 9187
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ db.size }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ db.name }}
+  namespace: movies
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ db.name }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: {{ db.owner }}
+      ports:
+        - port: 5432
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9187
+{% endfor %}

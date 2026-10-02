@@ -1,0 +1,83 @@
+# Settings for every playbook. The hosts, their addresses, public_host and edge_node come from
+# inventory.ini, which Terraform writes.
+
+# --- Versions -------------------------------------------------------------------------------------
+# One minor release behind the newest (1.37), for Calico 3.32. Ubuntu 24.04 ships containerd 2.2.
+kubernetes_version: "1.35"
+calico_version: v3.32.2
+helm_version: v4.3.0
+local_path_provisioner_version: v0.0.37
+strimzi_version: 1.2.0
+kafka_version: 4.3.1
+kube_prometheus_stack_version: 91.8.2
+# Calico's default pod network; must not overlap the VMs' subnet (terraform's subnet_cidr).
+pod_network_cidr: 192.168.0.0/16
+
+# --- Application images ---------------------------------------------------------------------------
+# Built and pushed by infra/build-images.sh <registry> <tag>: set the same values here.
+image_registry: docker.io/monteirinho26   # Docker Hub, public
+image_tag: v1
+# For a private registry, its address and a read-only token (e.g. a GitLab deploy token with
+# read_registry). Leave server empty for a public one.
+image_pull_secret:
+  server: ""
+  username: ""
+  password: ""
+
+# --- Public address -------------------------------------------------------------------------------
+# The edge node's static IP, from Terraform. Set public_host to a domain name instead if you have one
+# pointing at that IP (and a certificate for it below).
+public_url: "https://{{ public_host }}"
+# Keycloak's browser library only works over HTTPS, so NGINX always serves it. Without a certificate
+# here, the playbook makes a self-signed one: browsers warn once, then work. To use a real one (e.g. from
+# Let's Encrypt), give the paths of its PEM files on the management node.
+tls_certificate_file: ""
+tls_key_file: ""
+
+# --- Models ---------------------------------------------------------------------------------------
+# Downloaded into Ollama by a Job; see the README's "Choosing a model".
+ollama_chat_model: qwen2.5:3b
+ollama_embedding_model: nomic-embed-text
+
+# --- Kafka ----------------------------------------------------------------------------------------
+# Brokers (each also a KRaft controller). With 3, topics keep 3 copies and survive one broker down.
+kafka_replicas: 3
+
+# --- Secrets --------------------------------------------------------------------------------------
+# Generated on the first run into ansible/.secrets/ (not committed) and reused afterwards: that folder
+# is where to read the Keycloak and Grafana admin passwords.
+secrets_dir: "{{ inventory_dir }}/.secrets"
+secret_chars: [ascii_letters, digits]
+keycloak_admin_password: "{{ lookup('ansible.builtin.password', secrets_dir + '/keycloak-admin', length=20, chars=secret_chars) }}"
+grafana_admin_password: "{{ lookup('ansible.builtin.password', secrets_dir + '/grafana-admin', length=20, chars=secret_chars) }}"
+recommendation_service_secret: "{{ lookup('ansible.builtin.password', secrets_dir + '/recommendation-service', length=32, chars=secret_chars) }}"
+recommendation_worker_secret: "{{ lookup('ansible.builtin.password', secrets_dir + '/recommendation-worker', length=32, chars=secret_chars) }}"
+
+# One PostgreSQL instance per service, as in compose.yaml, plus Keycloak's own (compose shares the movies
+# server with it). `owner` is the only app whose pods may connect (NetworkPolicy in databases.yaml.j2).
+databases:
+  - name: movies-db
+    image: pgvector/pgvector:pg16-trixie
+    database: movies
+    # The dump (data/movies_dump.sql) and the extensions in movies-service's migrations need postgres.
+    user: postgres
+    owner: movies-service
+    size: 10Gi
+  - name: profiles-db
+    image: postgres:16
+    database: profiles
+    user: profiles
+    owner: profiles-service
+    size: 2Gi
+  - name: recommendations-db
+    image: postgres:16
+    database: recommendations
+    user: recommendations
+    owner: recommendation-service
+    size: 2Gi
+  - name: keycloak-db
+    image: postgres:16
+    database: keycloak
+    user: keycloak
+    owner: keycloak
+    size: 2Gi

@@ -1,0 +1,59 @@
+# Deployment to Google Cloud: run `just` to list the recipes.
+#
+# On your computer:   just mgmt-start, just mgmt, just keygen, just images <registry>, just prometheus, just mgmt-stop
+# Inside mgmt:        just infra, just cluster, just platform, just app (or just all), just destroy
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+repo := justfile_directory() / ".."
+
+default:
+    @just --list
+
+# Build and start the management container, with the repository mounted at /root/g17
+mgmt-start:
+    docker build -t g17-mgmt mgmt
+    docker run --rm -d --name g17-mgmt --hostname mgmt -v "{{repo}}:/root/g17" g17-mgmt
+
+# Open a shell in the management container
+mgmt:
+    docker exec -it g17-mgmt bash
+
+# Stop the management container (everything it needs is kept in this folder)
+mgmt-stop:
+    docker stop g17-mgmt
+
+# Create the SSH key Terraform installs on the VMs and Ansible logs in with
+keygen:
+    mkdir -p ssh && test -f ssh/id_ed25519 || ssh-keygen -t ed25519 -N "" -C g17-deploy -f ssh/id_ed25519
+
+# Build the five images for linux/amd64 and push them, e.g. just images docker.io/<user> v1
+images registry tag="latest":
+    ./build-images.sh {{registry}} {{tag}}
+
+# Create the VMs, network and firewall in GCP, and write ansible/inventory.ini
+infra:
+    cd terraform && terraform init -upgrade && terraform apply
+
+# Install Kubernetes (containerd, kubeadm, Calico) on the VMs
+cluster:
+    cd ansible && ansible-playbook playbooks/01-nodes.yml playbooks/02-cluster.yml
+
+# Install the storage provisioner, Strimzi (Kafka operator), Prometheus and Grafana
+platform:
+    cd ansible && ansible-playbook playbooks/03-platform.yml
+
+# Deploy (or update) the application
+app:
+    cd ansible && ansible-playbook playbooks/04-app.yml
+
+# Everything, from no VMs to the application running
+all: infra cluster platform app
+
+# Open Prometheus at http://localhost:9090: run on your computer, which needs kubectl (Prometheus isn't public)
+prometheus:
+    kubectl --kubeconfig .kube/config -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090
+
+# Delete every cloud resource (VMs, disks, static IP, network): all data is lost
+destroy:
+    cd terraform && terraform destroy

@@ -1,0 +1,83 @@
+# recommendation-worker: takes jobs from Kafka and asks Ollama. Not public: it has no API, and its port
+# (8083) only serves health checks and /q/metrics, where it also measures Ollama's answers. More copies
+# take jobs in parallel (up to the topic's 6 partitions), but they share the one Ollama.
+{% set restart_annotation = image_tag == 'latest' %}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendation-worker
+  namespace: movies
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: recommendation-worker
+  template:
+    metadata:
+      labels:
+        app: recommendation-worker
+{% if restart_annotation %}
+      # The image is "latest": a new value on every deploy makes Kubernetes pull it again.
+      annotations:
+        movies/deployed-at: "{{ deploy_timestamp }}"
+{% endif %}
+    spec:
+{% if image_pull_secret.server %}
+      imagePullSecrets:
+        - name: registry
+{% endif %}
+      containers:
+        - name: recommendation-worker
+          image: "{{ image_registry }}/recommendation-worker:{{ image_tag }}"
+          imagePullPolicy: Always
+          env:
+            # Heap at most half the memory limit (run-java.sh's default, 80%, leaves too little for the rest of the JVM).
+            - name: JAVA_MAX_MEM_RATIO
+              value: "50"
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "{{ kafka_bootstrap_servers }}"
+            - name: QUARKUS_REST_CLIENT_OLLAMA_URL
+              value: http://ollama:11434
+            - name: QUARKUS_REST_CLIENT_MOVIES_API_URL
+              value: http://movies-service:8080
+            - name: KEYCLOAK_REALM_URL
+              value: "{{ keycloak_realm_url }}"
+            - name: RECOMMENDATION_WORKER_SECRET
+              valueFrom:
+                secretKeyRef: { name: movies-secrets, key: recommendation-worker-secret }
+            - name: RECOMMENDATION_MODEL
+              value: "{{ ollama_chat_model }}"
+          ports:
+            - name: http
+              containerPort: 8083
+          # Liveness only says the JVM is up; readiness also that its database, Kafka (or Ollama) answer.
+          startupProbe:
+            httpGet: { path: /q/health/started, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: { path: /q/health/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /q/health/live, port: http }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 768Mi }
+---
+# Its metrics are at /q/metrics on the same port, scraped by Prometheus (monitoring.yaml.j2), but never
+# routed by NGINX.
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendation-worker
+  namespace: movies
+  labels:
+    app: recommendation-worker
+    movies/monitor: quarkus
+spec:
+  selector:
+    app: recommendation-worker
+  ports:
+    - name: http
+      port: 8083

@@ -1,0 +1,183 @@
+# The only public entry point: NGINX on the edge node's ports 80 and 443 (hostPort), with TLS.
+#
+#   /                        -> frontend:3000
+#   /api/movies, /api/genres -> movies-service:8080/movies, /genres
+#   /api/profiles            -> profiles-service:8080/profiles
+#   /api/recommendations     -> recommendation-service:8080/recommendations (/events is a stream)
+#   /auth/                   -> keycloak:8080/auth/
+#   /grafana/                -> Grafana (monitoring namespace)
+#
+# The APIs move under /api because the frontend's own pages are also at /movies, /recommendations, ...
+# Nothing else is routed: not the services' /q/... (health, metrics, Swagger UI), profiles-service's
+# /internal/..., the worker, Ollama, the databases, Kafka or Prometheus. Prometheus reaches what it
+# scrapes inside the cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx
+  namespace: movies
+data:
+  default.conf: |
+    # Upstream names are resolved when NGINX starts, so their Services must exist by then (they keep
+    # their address while pods come and go).
+    map $http_upgrade $connection_upgrade {
+      default upgrade;
+      ""      close;
+    }
+
+    server {
+      listen 80;
+      return 301 https://$host$request_uri;
+    }
+
+    server {
+      listen 443 ssl;
+      http2 on;
+      server_tokens off;
+      ssl_certificate     /etc/nginx/tls/tls.crt;
+      ssl_certificate_key /etc/nginx/tls/tls.key;
+      ssl_protocols       TLSv1.2 TLSv1.3;
+
+      proxy_http_version 1.1;
+      proxy_set_header Host              $host;
+      proxy_set_header X-Real-IP         $remote_addr;
+      proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Host  $host;
+      proxy_set_header X-Forwarded-Port  $server_port;
+      # A recommendation request can wait on Ollama's embeddings for a while.
+      proxy_read_timeout 300s;
+
+      location / {
+        proxy_pass http://frontend.movies.svc.cluster.local:3000;
+      }
+
+      location /api/movies {
+        proxy_pass http://movies-service.movies.svc.cluster.local:8080/movies;
+      }
+
+      location /api/genres {
+        proxy_pass http://movies-service.movies.svc.cluster.local:8080/genres;
+      }
+
+      location /api/profiles {
+        proxy_pass http://profiles-service.movies.svc.cluster.local:8080/profiles;
+      }
+
+      location /api/recommendations {
+        proxy_pass http://recommendation-service.movies.svc.cluster.local:8080/recommendations;
+      }
+
+      # Server-sent events: pass each one on at once instead of buffering, and keep the connection open
+      # (the service sends a heartbeat every 20 s; the frontend reopens it every 4 minutes).
+      location = /api/recommendations/events {
+        proxy_pass http://recommendation-service.movies.svc.cluster.local:8080/recommendations/events;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+      }
+
+      location /auth/ {
+        proxy_pass http://keycloak.movies.svc.cluster.local:8080;
+        # Keycloak's responses carry large cookies and headers.
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
+      }
+
+      location /grafana/ {
+        proxy_pass http://monitoring-grafana.monitoring.svc.cluster.local:80;
+        # Grafana Live uses WebSockets.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+      }
+    }
+
+    # Request and connection counts for nginx-prometheus-exporter, from inside the pod only.
+    server {
+      listen 8081;
+      location = /stub_status {
+        stub_status;
+        allow 127.0.0.1;
+        deny all;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: movies
+spec:
+  replicas: 1
+  # It holds the node's ports 80 and 443: stop the old pod before starting the new one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+      annotations:
+        # Restart when the configuration changes.
+        movies/config-hash: "{{ nginx_config_hash }}"
+    spec:
+      nodeSelector:
+        movies/edge: "true"
+      containers:
+        - name: nginx
+          image: nginx:stable-alpine
+          ports:
+            - name: http
+              containerPort: 80
+              hostPort: 80
+            - name: https
+              containerPort: 443
+              hostPort: 443
+          readinessProbe:
+            tcpSocket: { port: https }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+        - name: exporter
+          image: nginx/nginx-prometheus-exporter:1.5.3
+          args: [--nginx.scrape-uri=http://127.0.0.1:8081/stub_status]
+          ports:
+            - name: metrics
+              containerPort: 9113
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+      volumes:
+        - name: config
+          configMap:
+            name: nginx
+        - name: tls
+          secret:
+            secretName: movies-tls
+---
+# Only for Prometheus: the public ports are the node's, not this Service's.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: movies
+  labels:
+    app: nginx
+spec:
+  selector:
+    app: nginx
+  ports:
+    - name: metrics
+      port: 9113

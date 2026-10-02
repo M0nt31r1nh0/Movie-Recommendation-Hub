@@ -1,0 +1,60 @@
+# Kafka, run by the Strimzi operator (installed by ansible/playbooks/03-platform.yml): {{ kafka_replicas }} nodes in
+# KRaft mode, each both broker and controller, with persistent storage. Clients connect to
+# movies-kafka-kafka-bootstrap.kafka.svc:9092. Topics are still created on first use, with 6 partitions,
+# as in compose.yaml.
+{% set copies = [kafka_replicas, 3] | min %}
+{% set min_isr = [copies - 1, 1] | max %}
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: movies-kafka
+spec:
+  replicas: {{ kafka_replicas }}
+  roles: [controller, broker]
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 5Gi
+        deleteClaim: false
+        kraftMetadata: shared
+  # As compose.yaml: the default 1 GB heap is far more than this project's few small messages need.
+  jvmOptions:
+    "-Xms": 256m
+    "-Xmx": 512m
+  resources:
+    requests: { cpu: 200m, memory: 768Mi }
+    limits: { memory: 1Gi }
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: movies-kafka
+  namespace: kafka
+spec:
+  kafka:
+    version: {{ kafka_version }}
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      num.partitions: 6
+      default.replication.factor: {{ copies }}
+      min.insync.replicas: {{ min_isr }}
+      offsets.topic.replication.factor: {{ copies }}
+      transaction.state.log.replication.factor: {{ copies }}
+      transaction.state.log.min.isr: {{ min_isr }}
+  # Kafka Exporter: consumer group lag (jobs waiting for the worker) and topic offsets, for Prometheus
+  # (PodMonitor in monitoring.yaml.j2).
+  kafkaExporter:
+    topicRegex: ".*"
+    groupRegex: ".*"
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { memory: 256Mi }

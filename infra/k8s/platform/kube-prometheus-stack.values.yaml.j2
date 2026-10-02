@@ -1,0 +1,55 @@
+# kube-prometheus-stack's settings (rendered by ansible/playbooks/03-platform.yml).
+
+# No alerting in this project.
+alertmanager:
+  enabled: false
+
+# kubeadm binds these control-plane components' metrics to 127.0.0.1, out of Prometheus' reach: without
+# this, their targets show as down.
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # Pick up every ServiceMonitor and PodMonitor in any namespace, not only the chart's own
+    # (the application's are in k8s/monitoring.yaml.j2).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    scrapeInterval: 15s
+    retention: 7d
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits: { memory: 1536Mi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 10Gi
+
+grafana:
+  adminPassword: "{{ grafana_admin_password }}"
+  # Served by NGINX at {{ public_url }}/grafana/.
+  grafana.ini:
+    server:
+      root_url: "{{ public_url }}/grafana/"
+      serve_from_sub_path: true
+  # Under the sub-path, Grafana's own metrics move too (/metrics redirects to the public URL).
+  serviceMonitor:
+    path: /grafana/metrics
+  # Dashboards come from ConfigMaps labelled grafana_dashboard=1, in any namespace (the application's
+  # is created by ansible/playbooks/04-app.yml from k8s/dashboards/).
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL

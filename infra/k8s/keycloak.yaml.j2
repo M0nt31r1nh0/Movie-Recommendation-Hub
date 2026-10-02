@@ -1,0 +1,102 @@
+# Accounts and login, at {{ public_url }}/auth (through NGINX). Production mode, over plain HTTP inside
+# the cluster: NGINX ends TLS and says so in X-Forwarded-* headers.
+#   - Browsers and tokens use the public URL (KC_HOSTNAME), so tokens' issuer is {{ public_url }}/auth/realms/movies.
+#   - The services reach it inside the cluster, at http://keycloak.movies.svc:8080/auth
+#     (KC_HOSTNAME_BACKCHANNEL_DYNAMIC), and still check that issuer.
+# The movies realm is imported on the first start from the keycloak-realm ConfigMap, which
+# ansible/playbooks/04-app.yml makes from infra/keycloak/movies-realm.json, with the public URL and the
+# services' secrets in place of localhost:3000 and the dev secrets.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: movies
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.7.4
+          args: [start, --import-realm]
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: admin
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: movies-secrets, key: keycloak-admin-password }
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://keycloak-db:5432/keycloak
+            - name: KC_DB_USERNAME
+              value: keycloak
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: movies-secrets, key: keycloak-db-password }
+            - name: KC_HOSTNAME
+              value: "{{ public_url }}/auth"
+            - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+              value: "true"
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_HTTP_RELATIVE_PATH
+              value: /auth
+            # Health and metrics stay at the management port's root: :9000/health, :9000/metrics.
+            - name: KC_HTTP_MANAGEMENT_RELATIVE_PATH
+              value: /
+            - name: KC_PROXY_HEADERS
+              value: xforwarded
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9000
+          # The first start also builds Keycloak for these options, and imports the realm.
+          startupProbe:
+            httpGet: { path: /health/started, port: management }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: management }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 250m, memory: 768Mi }
+            limits: { memory: 1536Mi }
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: movies
+  labels:
+    app: keycloak
+spec:
+  selector:
+    app: keycloak
+  ports:
+    - name: http
+      port: 8080
+    - name: management
+      port: 9000

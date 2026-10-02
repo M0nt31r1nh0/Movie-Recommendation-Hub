@@ -1,0 +1,197 @@
+# Deploys the application, or updates it: renders infra/k8s/*.yaml.j2 onto the master and applies them
+# in order, waiting for each layer before starting the next one that needs it:
+#   databases (+ the movies dump, first time only) -> Kafka -> Ollama (+ models) -> Keycloak
+#   -> the four services and the frontend -> NGINX -> what Prometheus scrapes, and Grafana's dashboard.
+# Running it again only changes what changed (and, with image_tag latest, pulls the images again).
+- name: Deploy the application
+  hosts: controlplane
+  vars:
+    k8s_src: "{{ playbook_dir }}/../../k8s"
+    repo: "{{ playbook_dir }}/../../.."
+    workdir: "/home/{{ ansible_user }}/movies"
+    keycloak_realm_url: http://keycloak.movies.svc.cluster.local:8080/auth/realms/movies
+    kafka_bootstrap_servers: movies-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092
+    deploy_timestamp: "{{ now(utc=true).isoformat() }}"
+    nginx_config_hash: "{{ (lookup('ansible.builtin.file', k8s_src + '/nginx.yaml.j2') + public_url) | hash('sha1') }}"
+    apps: [movies-service, profiles-service, recommendation-service, recommendation-worker, frontend]
+
+  tasks:
+    - name: Check that the images' registry is set
+      ansible.builtin.assert:
+        that: image_registry != 'CHANGE-ME'
+        fail_msg: Set image_registry (and image_tag) in infra/ansible/group_vars/all.yml, as given to infra/build-images.sh.
+
+    - name: Create {{ workdir }}
+      ansible.builtin.file:
+        path: "{{ workdir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Render the manifests
+      ansible.builtin.template:
+        src: "{{ item }}"
+        dest: "{{ workdir }}/{{ item | basename | regex_replace('\\.j2$', '') }}"
+        mode: "0600"
+      loop: "{{ query('ansible.builtin.fileglob', k8s_src + '/*.yaml.j2') }}"
+
+    - name: Create the namespace and secrets
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/namespace.yaml
+
+    # --- TLS ---------------------------------------------------------------------------------------
+    - name: Copy the TLS certificate given in tls_certificate_file / tls_key_file
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ workdir }}/{{ item.dest }}"
+        mode: "0600"
+      loop:
+        - { src: "{{ tls_certificate_file }}", dest: tls.crt }
+        - { src: "{{ tls_key_file }}", dest: tls.key }
+      when: tls_certificate_file | length > 0
+
+    - name: Otherwise make a self-signed one for {{ public_host }}
+      ansible.builtin.command: >
+        openssl req -x509 -newkey rsa:2048 -nodes -days 365
+        -subj "/CN={{ public_host }}"
+        -addext "subjectAltName={{ 'IP' if public_host is match('^[0-9.]+$') else 'DNS' }}:{{ public_host }}"
+        -keyout {{ workdir }}/tls.key -out {{ workdir }}/tls.crt
+      args:
+        creates: "{{ workdir }}/tls.crt"
+      when: tls_certificate_file | length == 0
+
+    - name: Store it in the movies-tls Secret
+      ansible.builtin.shell: >
+        kubectl -n movies create secret tls movies-tls --cert={{ workdir }}/tls.crt --key={{ workdir }}/tls.key
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    # --- Databases ---------------------------------------------------------------------------------
+    - name: Start the databases
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/databases.yaml
+
+    - name: Wait for the databases
+      ansible.builtin.command: kubectl -n movies rollout status statefulset/{{ item.name }} --timeout=10m
+      loop: "{{ databases }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+
+    - name: Check whether the movies are loaded
+      ansible.builtin.command: >
+        kubectl -n movies exec movies-db-0 -c postgres --
+        psql -U postgres -d movies -tAc "select to_regclass('movies.movie') is not null"
+      register: movies_loaded
+      changed_when: false
+
+    - name: Load the movies (first time only, before movies-service creates empty tables)
+      when: movies_loaded.stdout | trim == 'f'
+      block:
+        - name: Copy the dump to the master
+          ansible.builtin.copy:
+            src: "{{ repo }}/data/movies_dump.sql"
+            dest: "{{ workdir }}/movies_dump.sql"
+            mode: "0600"
+
+        # Postgres 16 reports one harmless error: unrecognized configuration parameter "transaction_timeout".
+        - name: Restore it
+          ansible.builtin.shell: >
+            kubectl -n movies exec -i movies-db-0 -c postgres --
+            psql -q -U postgres -d movies < {{ workdir }}/movies_dump.sql
+
+        - name: Delete the copy
+          ansible.builtin.file:
+            path: "{{ workdir }}/movies_dump.sql"
+            state: absent
+
+    # --- Kafka -------------------------------------------------------------------------------------
+    - name: Create the Kafka cluster
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/kafka.yaml
+
+    - name: Wait until Strimzi says it's ready
+      ansible.builtin.command: kubectl -n kafka wait kafka/movies-kafka --for=condition=Ready --timeout=15m
+      changed_when: false
+
+    # --- Ollama ------------------------------------------------------------------------------------
+    - name: Delete the previous model download (a Job can't be changed, only replaced)
+      ansible.builtin.command: kubectl -n movies delete job ollama-models --ignore-not-found
+      changed_when: false
+
+    - name: Start Ollama and download the models
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/ollama.yaml
+
+    - name: Wait for the models (about 2.5 GB the first time)
+      ansible.builtin.command: kubectl -n movies wait job/ollama-models --for=condition=Complete --timeout=30m
+      changed_when: false
+
+    # --- Keycloak ----------------------------------------------------------------------------------
+    - name: Copy the realm
+      ansible.builtin.copy:
+        src: "{{ repo }}/infra/keycloak/movies-realm.json"
+        dest: "{{ workdir }}/movies-realm.json"
+        mode: "0600"
+
+    - name: Put the public URL and real secrets in place of localhost:3000 and the dev secrets
+      ansible.builtin.replace:
+        path: "{{ workdir }}/movies-realm.json"
+        regexp: "{{ item.dev | regex_escape }}"
+        replace: "{{ item.real }}"
+      loop:
+        - { dev: "http://localhost:3000", real: "{{ public_url }}" }
+        - { dev: recommendation-service-dev-secret, real: "{{ recommendation_service_secret }}" }
+        - { dev: recommendation-worker-dev-secret, real: "{{ recommendation_worker_secret }}" }
+      loop_control:
+        label: "{{ item.dev }}"
+
+    # Keycloak only imports it when the realm doesn't exist yet: later changes go through its admin
+    # console, as in the README's "Keycloak admin console".
+    - name: Store it in the keycloak-realm ConfigMap
+      ansible.builtin.shell: >
+        kubectl -n movies create configmap keycloak-realm --from-file=movies-realm.json={{ workdir }}/movies-realm.json
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Start Keycloak
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/keycloak.yaml
+
+    - name: Wait for Keycloak
+      ansible.builtin.command: kubectl -n movies rollout status deployment/keycloak --timeout=10m
+      changed_when: false
+
+    # --- The application ---------------------------------------------------------------------------
+    - name: Start the services and the frontend
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/{{ item }}.yaml
+      loop: "{{ apps }}"
+
+    - name: Wait for them
+      ansible.builtin.command: kubectl -n movies rollout status deployment/{{ item }} --timeout=10m
+      loop: "{{ apps }}"
+      changed_when: false
+
+    - name: Start NGINX
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/nginx.yaml
+
+    - name: Wait for NGINX
+      ansible.builtin.command: kubectl -n movies rollout status deployment/nginx --timeout=5m
+      changed_when: false
+
+    # --- Monitoring --------------------------------------------------------------------------------
+    - name: Tell Prometheus what to scrape
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/monitoring.yaml
+
+    - name: Copy Grafana's dashboard
+      ansible.builtin.copy:
+        src: "{{ k8s_src }}/dashboards/movies.json"
+        dest: "{{ workdir }}/movies-dashboard.json"
+        mode: "0600"
+
+    - name: Store it in a ConfigMap Grafana loads (label grafana_dashboard=1)
+      ansible.builtin.shell: >
+        kubectl -n monitoring create configmap movies-dashboard --from-file=movies.json={{ workdir }}/movies-dashboard.json
+        --dry-run=client -o yaml
+        | kubectl label --local -f - grafana_dashboard=1 -o yaml
+        | kubectl apply -f -
+
+    - name: Where to find it
+      ansible.builtin.debug:
+        msg:
+          - "Application: {{ public_url }}"
+          - "Grafana:     {{ public_url }}/grafana (admin, password in infra/ansible/.secrets/grafana-admin)"
+          - "Keycloak:    {{ public_url }}/auth/admin (admin, password in infra/ansible/.secrets/keycloak-admin)"
+          - "Prometheus:  just prometheus, then http://localhost:9090"

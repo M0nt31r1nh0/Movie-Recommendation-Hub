@@ -1,0 +1,14 @@
+# Credentials, keys and generated files of the cloud deployment: never commit them.
+ssh/
+.kube/
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.json
+ansible/inventory.ini
+ansible/.secrets/
+ansible/tls/
+
+# Logs of local runs
+*.log

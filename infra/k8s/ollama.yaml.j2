@@ -1,0 +1,114 @@
+# The inference engine. Not public: only the worker and movies-service (embeddings) may call it
+# (NetworkPolicy). Ollama has no metrics endpoint: the worker measures its answers
+# (recommendation_llm_*), and the kubelet its CPU and memory.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: movies
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 15Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: movies
+spec:
+  replicas: 1
+  # The models' volume can only be mounted by one pod: stop the old one before starting the new.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.35.0
+          env:
+            - name: OLLAMA_NUM_PARALLEL
+              value: "1"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "2"
+            - name: OLLAMA_KEEP_ALIVE
+              value: 10m
+          ports:
+            - name: http
+              containerPort: 11434
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          # A 3B model at 4-bit needs about 2.5 GB, plus the embedding model.
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits: { memory: 5Gi }
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: movies
+spec:
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ollama
+  namespace: movies
+spec:
+  podSelector:
+    matchLabels:
+      app: ollama
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [recommendation-worker, movies-service, ollama-models]
+      ports:
+        - port: 11434
+---
+# Downloads the models into Ollama's volume, like compose.yaml's ollama-models. A model already there is
+# only checked, so this is quick after the first time.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-models
+  namespace: movies
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: ollama-models
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: pull
+          image: ollama/ollama:0.35.0
+          env:
+            - name: OLLAMA_HOST
+              value: http://ollama:11434
+          command: [sh, -c, "ollama pull {{ ollama_chat_model }} && ollama pull {{ ollama_embedding_model }}"]

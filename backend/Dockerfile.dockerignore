@@ -1,0 +1,5 @@
+# Used instead of the service's .dockerignore when building with backend/Dockerfile: only the sources go in.
+*
+!pom.xml
+!src/
+src/test/

@@ -34,6 +34,8 @@ docker exec -i postgres psql -U postgres -d movies < data/movies_dump.sql     # 
 
 Then open `http://localhost:3000` and register. The numbered sections below explain each step.
 
+To deploy everything to a Kubernetes cluster in Google Cloud instead (Terraform, Ansible, kubeadm, NGINX in front, Prometheus and Grafana), see [infra/README.md](infra/README.md).
+
 ## Install and configure
 
 You need four tools. The versions below are the ones the project is developed with.
