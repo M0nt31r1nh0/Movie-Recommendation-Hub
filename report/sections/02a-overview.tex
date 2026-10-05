@@ -1,0 +1,28 @@
+% 02a-overview -- follows \section{System Design and Architecture}
+The system follows the tiered microservices architecture of the specification (Fig.~\ref{fig:architecture}). The \emph{frontend tier} is a Next.js web application, the only entry point exposed to users; in the cluster it sits behind an NGINX reverse proxy that terminates TLS and routes \code{/} to the frontend, \code{/api/*} to the services, \code{/auth/} to Keycloak and \code{/grafana/} to Grafana. Users register and log in through \emph{Keycloak}, an OpenID Connect (OIDC) identity provider: the browser obtains a short-lived (5\,min) JWT access token and sends it as a \code{Bearer} header to every API call. The \emph{backend tier} consists of four Quarkus services: the \emph{Movies API} (catalogue browsing, full-text search and search by meaning), the \emph{Profiles API} (favourite genres, watched and saved movies, follow graph), the \emph{Recommendation API}, which stores recommendations and queues the work, and the \emph{recommendation worker}, which consumes that work from \emph{Apache Kafka} and queries the \emph{inference engine}, Ollama. Each API validates the token's signature, issuer and its own audience (\code{movies-service}, \code{profiles-service}, \code{recommendation-service}), so tokens minted for other clients are rejected; the recommendation service and the worker call the other services with their own Keycloak service-account tokens. The \emph{data tier} is PostgreSQL~16, with one instance per service (movies, profiles, recommendations) and one for Keycloak; each is migrated by Flyway, and services read each other's data only through their APIs. A \emph{monitoring server} (Prometheus, Grafana) scrapes all components. Table~\ref{tab:components} summarises the components and their status.
+
+\begin{table}[t]\centering\footnotesize
+
+\caption{System components and implementation status.}\label{tab:components}
+\begin{tabularx}{\columnwidth}{@{}l>{\raggedright\arraybackslash}X l@{}}
+\toprule
+\textbf{Component} & \textbf{Technology} & \textbf{Status}\\
+\midrule
+Frontend & Next.js 16, React 19, Tailwind 4, keycloak-js & Done\\
+Identity provider & Keycloak 26 (OIDC, PKCE) & Done\\
+Movies API & Quarkus 3.39, Hibernate Panache, Flyway, pgvector & Done\\
+Profiles API & Quarkus 3.39, Hibernate Panache, Flyway & Done\\
+Recommendation API + agent & Quarkus, Kafka, background agent & Done\\
+Recommendation worker & Quarkus, Kafka consumer & Done\\
+Inference engine & Ollama (CPU), Qwen2.5~3B, nomic-embed-text & Done\\
+Message queue & Apache Kafka 4.3 (Strimzi, 3 brokers) & Done\\
+Databases & PostgreSQL 16, one instance per service & Done\\
+Container images & Multi-stage Dockerfiles (backend, frontend) & Done\\
+Local deployment & Docker Compose (infra, backend, frontend), \code{just} & Done\\
+Cluster (IaC) & Terraform, Ansible, kubeadm on GCP & Done\\
+Reverse proxy & NGINX with TLS & Done\\
+Monitoring & Prometheus, Grafana, Micrometer & Done\\
+Persistent state (advanced) & StatefulSets, local-path volumes & Partial\\
+\bottomrule
+\end{tabularx}
+\end{table}

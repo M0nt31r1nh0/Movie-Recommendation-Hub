@@ -1,0 +1,69 @@
+%==============================================================================
+%  Movie Recommendation Hub -- PSIA 2026/2027 Project Report
+%  Group 17 -- Instituto Superior Tecnico, Universidade de Lisboa
+%  ACM-like two-column look, adapted to the PSIA rules:
+%  Times 10pt, 2.0 cm side margins, 1.5 cm top/bottom, single spacing, <= 5 pages.
+%  Compile: latexmk -pdf -jobname=project-g17 main.tex
+%==============================================================================
+\documentclass[10pt,a4paper,twocolumn]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{mathptmx}                 % Times New Roman
+\usepackage[scaled=0.92]{helvet}      % ACM-like sans headings
+\usepackage[left=2.0cm,right=2.0cm,top=1.5cm,bottom=1.5cm,columnsep=0.6cm,includefoot,footskip=0.6cm]{geometry}
+\usepackage{graphicx,booktabs,tabularx,enumitem,xcolor,amsmath}
+\usepackage[hidelinks]{hyperref}
+\usepackage{titlesec}
+\usepackage[font=small,labelfont=bf,skip=3pt]{caption}
+
+% ---- ACM-style headings ------------------------------------------------------
+\titleformat{\section}{\sffamily\bfseries\normalsize\MakeUppercase}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\sffamily\bfseries\normalsize}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}[runin]{\itshape}{}{0em}{}[.]
+\titlespacing*{\section}{0pt}{6pt}{3pt}
+\titlespacing*{\subsection}{0pt}{4pt}{2pt}
+\titlespacing*{\subsubsection}{0pt}{2pt}{0.5em}
+\setlist{leftmargin=1.1em,nosep}
+\setlength{\parskip}{0pt}
+\setlength{\textfloatsep}{6pt plus 2pt}
+\setlength{\floatsep}{6pt plus 2pt}
+\setlength{\abovecaptionskip}{3pt}
+
+% ---- Placeholders for work still to be done ----------------------------------
+% \TODO{...}  : short red inline placeholder (to replace once implemented)
+% \PH{...}    : a whole placeholder paragraph, boxed in red
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}}
+\newcommand{\PH}[1]{\par\noindent\fcolorbox{red}{red!4}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule}{\small\textcolor{red!70!black}{\textbf{PLACEHOLDER.} #1}}}\par}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\begin{document}
+
+% ---- Title block (ACM-like) --------------------------------------------------
+\twocolumn[{%
+\begin{center}
+{\sffamily\bfseries\LARGE Movie Recommendation Hub: An AI-Powered,\\[2pt] Microservices-Based Platform on Self-Hosted Kubernetes\par}
+\vspace{6pt}
+{\sffamily\small PSIA 2026/2027 -- Project Report -- \textbf{Group 17}\par}
+\vspace{6pt}
+\begin{tabular}{ccc}
+{\sffamily Jo\~ao Russo} & {\sffamily Tiago Fonseca} & {\sffamily \TODO{Name}}\\
+{\small ist1\TODO{xxxxx}} & {\small ist112346} & {\small ist1\TODO{xxxxx}}\\
+\end{tabular}\\[2pt]
+{\small Instituto Superior T\'ecnico, Universidade de Lisboa, Lisbon, Portugal}\\[4pt]
+{\small \textbf{Video:} \url{https://youtu.be/TODO} \;\textbar\; \textbf{Repository:} \url{https://gitlab.rnl.tecnico.ulisboa.pt/psia/groups26/g17}}
+\end{center}
+\vspace{4pt}
+}]
+
+\input{sections/01-introduction}
+\input{sections/02-design}
+\input{sections/03-advanced}
+\input{sections/04-evaluation}
+\input{sections/05-conclusion}
+
+{\small
+\bibliographystyle{plain}
+\bibliography{references}
+}
+
+\end{document}

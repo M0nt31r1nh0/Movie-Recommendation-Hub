@@ -1,0 +1,59 @@
+% 02b-backend
+\subsection{Backend Services and Data}
+
+The four services use Java~21+, Quarkus~3.39 (\code{quarkus-rest}, Hibernate ORM with Panache, Hibernate Validator, SmallRye Reactive Messaging for Kafka) and PostgreSQL~16. Flyway owns each schema; Hibernate only validates entities against them. Table~\ref{tab:endpoints} summarises the REST API.
+
+\begin{table}[t]\centering\footnotesize
+\caption{REST endpoints (all require a bearer token).}
+\label{tab:endpoints}
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Endpoint} & \textbf{Purpose} \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Movies service (:8080)}}\\
+\code{GET /movies} & Paginated list; \code{sort}: date, id, title, rating \\
+\code{GET /movies/search?q=} & Ranked full-text + fuzzy search \\
+\code{GET /movies/\{id\}} & One movie, or 404 \\
+\code{GET /genres} & The 20 genres \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Profiles service (:8081); \code{\{id\}} may be \code{me}}}\\
+\code{GET /profiles?q=} & Username prefix search \\
+\code{GET /profiles/\{id\}} & Profile with genres and counters \\
+\code{PUT .../me/favorite-genres} & Replace favourite genres \\
+\code{GET .../\{id\}/watched} & Watched movies, newest first \\
+\code{PUT|DELETE .../me/watched/\{mid\}} & Mark/unmark as watched \\
+\code{PUT|DELETE .../me/watchlist/\{mid\}} & Save for later / remove \\
+\code{GET .../\{id\}/following|followers} & Profiles followed / followers \\
+\code{PUT|DELETE .../me/following/\{id\}} & Follow/unfollow \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Recommendation service (:8082)}}\\
+\code{GET /recommendations/me} & Recommended for you: \code{READY}, \code{PREPARING} or \code{FAILED} \\
+\code{POST /recommendations/requests} & Ask AI: queues a request, answers \code{202} \\
+\code{GET /recommendations/requests[/\{id\}]} & Last five answers; one request \\
+\code{GET /recommendations/events} & Server-sent event when a result is stored \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Data}
+The catalogue comes from \emph{The Movies Dataset} (TMDB, Kaggle). Only \code{movies\_metadata.csv} is used. It is loaded as text into a staging table and cleaned into \code{movie}, \code{genre} and an $m{:}n$ \code{movie\_genre} bridge in a \code{movies} schema. Cleaning drops 3 column-shifted rows and 29 duplicate ids, sets blank descriptions to \code{NULL} and parses the Python-literal genre lists. The result is 45\,430 movies and 20 genres, shipped as a \code{pg\_dump} (\code{data/movies\_dump.sql}).
+
+\subsubsection{Movies service}
+\code{GET /movies} uses Panache paging (\code{page}, \code{size}$\le$100) and returns \code{\{items, page, size, totalItems, totalPages\}}. Sorting puts \code{NULL}s last and breaks ties by id, so pages never overlap. Migrations V1--V6 add the base schema, two stored generated \code{tsvector} columns with GIN indexes (V2), a \code{pg\_trgm} trigram index on titles (V3), IMDb ids (V4), accent-insensitive search via an \code{IMMUTABLE} \code{unaccent} wrapper (V5), and the \code{pgvector} extension with an embeddings table (V6). In V2, \code{search\_vector} holds English-stemmed title (weight A) and description (weight B). \code{title\_vector} uses the \code{simple} configuration, so titles made only of stop words (\emph{It}, \emph{Up}) stay findable. A search parses \code{q} with \code{websearch\_to\_tsquery}, which supports phrases, \code{or} and \code{-word}. For plain queries, title words are also matched as prefixes (\code{star wa}$\rightarrow$\emph{Star Wars}). If fewer than 10 movies match, trigram \code{word\_similarity} adds similar titles (\code{godfater}$\rightarrow$\emph{The Godfather}). Results are ranked in four tiers: title match, title prefix, description-only match (\code{ts\_rank\_cd}), then similar title. Within the first two tiers, movies are ordered by vote count, and an exact title match counts ten times. For Ask AI, the service also searches \emph{by meaning}: a background job embeds the $\sim$9\,100 movies with at least 50 votes (768-dimensional vectors from \code{nomic-embed-text}, computed by Ollama), and a request is ranked by vector similarity to its embedded text.
+
+\subsubsection{Profiles service}
+No registration hook is needed. On every authenticated request, \code{CurrentUser} upserts \code{profiles.profile} (\code{INSERT \dots{} ON CONFLICT}) from the JWT \code{sub} (the primary key, a UUID) and \code{preferred\_username}. The schema stores favourite genres, watched movies (with timestamp), a watchlist (V2) and a follow graph, which forbids self-follows through a \code{CHECK} and is indexed in both directions. Any user can read any profile, but writes go only through \code{/profiles/me/\dots}; the watchlist is visible only to its owner. The \code{PUT}s are idempotent (\code{ON CONFLICT DO NOTHING}, or full replacement for genres), and \code{DELETE} undoes them. Every change updates a \code{last\_changed\_at} column (V3), and internal endpoints, restricted to a service role, expose profiles and a fingerprint of each one's inputs to the recommendation service.
+
+\subsubsection{Persistence per service}
+Each service owns its own PostgreSQL instance, which no other service connects to (in the cluster, a NetworkPolicy enforces it). There are no foreign keys across databases: the profiles schema stores movie and genre ids only, and the service validates them through the Movies API before storing them. The Recommendation service stores its requests and results in its own database, and the worker has none. Keycloak keeps its data in a separate database.
+
+\subsubsection{Recommendation service and inference engine}
+Making a set of ten recommendations takes the model minutes on a CPU, so the work is asynchronous. The Recommendation API answers at once (\code{202}) and puts a job, with a snapshot of the profile, on a Kafka topic (\code{recommendation.requests}, 6 partitions, keyed by user id). The worker takes jobs one at a time and publishes the result on \code{recommendation.results}; the API stores it and a third topic (\code{recommendation.ready}) makes every API instance notify its connected browsers through server-sent events. A job leaves the queue only when it is done, so a worker that stops mid-job leaves it to the next one. There are two kinds of recommendations: \emph{Recommended for you}, made from a profile's genres, watched and saved movies and what the people it follows watched, and \emph{Ask AI}, made from free text such as ``a horror movie from the 80s'' and excluding movies already watched or saved. A 45\,000-movie catalogue is too large for a model to read, so the worker narrows it first: it turns an Ask AI request into search filters (genres, years, keywords), the Movies API returns 30 candidates (closest in meaning, then best rated), up to 20 more come from the followees' watched movies, and Qwen2.5~3B, running in Ollama, chooses ten. Its answer must follow a JSON schema that only allows the candidates' ids, so it cannot invent movies; if it chooses fewer than ten, the best-ranked candidates fill the gaps.
+
+A \emph{background agent} (every 10 minutes) keeps Recommended for you current without redoing work. Each result records a fingerprint of the profile it was made from, and the agent queues a new set only for profiles whose inputs changed (once they stop changing for 2 minutes), at most 20 per run; failures are retried with exponential back-off from 30 minutes to 6 hours. Identical inputs share results. The service keeps the current set per user and the last five Ask AI answers in PostgreSQL, and a request still pending after an hour is failed as a safety net for a job lost from the queue. The recommendation service and the worker call the other services as themselves, with Keycloak service-account tokens (client credentials grant) and not on behalf of a user.
+
+\subsubsection{Security and operations}
+Keycloak~26 hosts a \code{movies} realm, imported from JSON, with self-registration and brute-force protection. Its two \emph{public} clients, \code{movies-frontend} and \code{movies-swagger-ui}, use the authorization-code flow with PKCE (S256). Audience mappers add the services' audiences to every token. Each API is an OIDC \code{service} that checks signature, issuer, expiry and its own audience, so tokens issued for other clients in the realm are rejected. Access tokens live 5~minutes, and the frontend refreshes them. Each service exposes \code{/q/health} (SmallRye Health), Prometheus metrics at \code{/q/metrics} (Micrometer) and OpenAPI with a Swagger UI that logs in through Keycloak.
+
+\subsubsection{Testing}
+Tests use Quarkus Dev Services, which start a throwaway PostgreSQL container via Testcontainers. Flyway builds the schema there and loads fixtures from \code{db/testdata}. Keycloak is replaced by \code{@TestSecurity}/\code{@OidcSecurity}, which inject identities and claims. A separate test checks that unauthenticated requests get 401. For the recommendation services, Kafka is replaced by in-memory channels and the other services by mocks; the worker's tests need neither Docker nor Ollama, because the model is a mock.

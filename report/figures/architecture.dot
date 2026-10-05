@@ -1,0 +1,58 @@
+// Architecture of the AI-powered Movie Recommendation Hub (PSIA, group 17).
+// Solid border + saturated fill = implemented; dashed border + light fill = planned.
+// Palette: blue = application services, green = data, orange = AI, grey = ops/infra.
+// Fixed-position layout. Render with:
+//   neato -n2 -Tpdf architecture.dot -o architecture.pdf
+//   neato -n2 -Tpng -Gdpi=300 architecture.dot -o architecture.png
+digraph arch {
+  graph [fontname="Liberation Sans", splines=false, pad=0.03, margin=0, outputorder=nodesfirst];
+  node  [fontname="Liberation Sans", fontsize=10, margin="0.04,0.02"];
+  edge  [fontname="Liberation Sans", fontsize=8, arrowsize=0.55, penwidth=0.9, color="#444444"];
+  k8s [pos="394,137!", label="", shape=box, style="rounded,dashed", color="#666666", width=8.45, height=3.30, fixedsize=true, penwidth=1.0];
+  k8s_t [pos="267,246!", label=<<i>Kubernetes cluster (kubeadm) on GCP VMs — provisioned with Terraform + Ansible</i>>, shape=plaintext, width=4.76, height=0.18, margin=0, fontsize=9, fontcolor="#666666"];
+  pg [pos="497,111!", label="", shape=box, style="rounded", color="#2E6B30", width=1.70, height=2.48, fixedsize=true, penwidth=1.0];
+  pg_t [pos="469,191!", label=<<b>PostgreSQL 16</b>>, shape=plaintext, width=0.75, height=0.18, margin=0, fontsize=9, fontcolor="#2E6B30"];
+  mon [pos="628,84!", label="", shape=box, style="rounded,dashed", color="#444444", width=1.65, height=1.57, fixedsize=true, penwidth=1.0];
+  mon_t [pos="595,131!", label=<<b>Monitoring</b>>, shape=plaintext, width=0.58, height=0.18, margin=0, fontsize=9, fontcolor="#444444"];
+  browser [pos="40,126!", label=<<b>User browser</b>>, shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#444444", width=0.95, height=0.42, penwidth=1.3];
+  ingress [pos="140,216!", label=<<b>Ingress</b><br/><font point-size="8">NGINX controller</font>>, shape=box, style="rounded,filled,dashed", fillcolor="#F2F2F2", color="#444444", width=1.15, height=0.42, penwidth=1.1];
+  frontend [pos="230,158!", label=<<b>Frontend</b><br/><font point-size="8">Next.js</font>>, shape=box, style="rounded,filled", fillcolor="#9EC5EE", color="#1F4E79", width=1.1, height=0.42, penwidth=1.3];
+  keycloak [pos="230,58!", label=<<b>Keycloak 26</b><br/><font point-size="8">OIDC provider</font>>, shape=box, style="rounded,filled", fillcolor="#C9C9C9", color="#444444", width=1.1, height=0.42, penwidth=1.3];
+  recsvc [pos="371,216!", label=<<b>Recommendation API</b><br/><font point-size="8">Quarkus / Python</font>>, shape=box, style="rounded,filled,dashed", fillcolor="#EAF2FB", color="#1F4E79", width=1.45, height=0.42, penwidth=1.1];
+  movies [pos="371,158!", label=<<b>Movies API</b><br/><font point-size="8">Quarkus</font>>, shape=box, style="rounded,filled", fillcolor="#9EC5EE", color="#1F4E79", width=1.25, height=0.42, penwidth=1.3];
+  profiles [pos="371,108!", label=<<b>Profiles API</b><br/><font point-size="8">Quarkus</font>>, shape=box, style="rounded,filled", fillcolor="#9EC5EE", color="#1F4E79", width=1.25, height=0.42, penwidth=1.3];
+  recdb [pos="497,222!", label=<<b>Rec. cache</b><br/><font point-size="8">per profile</font>>, shape=cylinder, style="filled,dashed", fillcolor="#EDF6E6", color="#2E6B30", width=1.0, height=0.5, penwidth=1.1];
+  mvdb [pos="497,144!", label=<<b>movies</b><br/><font point-size="8">schema</font>>, shape=cylinder, style="filled", fillcolor="#A9D18E", color="#2E6B30", width=1.0, height=0.46, penwidth=1.3];
+  prdb [pos="497,102!", label=<<b>profiles</b><br/><font point-size="8">schema</font>>, shape=cylinder, style="filled", fillcolor="#A9D18E", color="#2E6B30", width=1.0, height=0.46, penwidth=1.3];
+  kcdb [pos="497,58!", label=<<b>keycloak</b><br/><font point-size="8">database</font>>, shape=cylinder, style="filled", fillcolor="#A9D18E", color="#2E6B30", width=1.0, height=0.46, penwidth=1.3];
+  agent [pos="626,216!", label=<<b>Rec. agent</b><br/><font point-size="8">background worker</font>>, shape=box, style="rounded,filled,dashed", fillcolor="#FDEEE2", color="#A0522D", width=1.3, height=0.42, penwidth=1.1];
+  llm [pos="626,166!", label=<<b>Inference engine</b><br/><font point-size="8">LLM / embeddings (Ollama)</font>>, shape=box, style="rounded,filled,dashed", fillcolor="#FDEEE2", color="#A0522D", width=1.55, height=0.42, penwidth=1.1];
+  prom [pos="626,97!", label=<<b>Prometheus</b><br/><font point-size="8">scrapes /q/metrics</font>>, shape=box, style="rounded,filled,dashed", fillcolor="#F2F2F2", color="#444444", width=1.3, height=0.42, penwidth=1.1];
+  grafana [pos="626,54!", label=<<b>Grafana</b><br/><font point-size="8">dashboards</font>>, shape=box, style="rounded,filled,dashed", fillcolor="#F2F2F2", color="#444444", width=1.3, height=0.42, penwidth=1.1];
+  pgnote [pos="497,173!", label="today: one shared instance\nplanned: one per service", shape=plaintext, fontsize=8, fontcolor="#2E6B30", width=1.6, height=0.2, ];
+  "l_1.75_2.15" [pos="126,155!", label="HTTPS", shape=plaintext, fontsize=8, fontcolor="#333333", width=0.1, height=0.1, margin=0];
+  "l_6.9_0.43" [pos="497,31!", label="planned: PV/PVC storage", shape=plaintext, fontsize=8, fontcolor="#2E6B30", width=0.1, height=0.1, margin=0];
+  "l_1.5_1.1" [pos="108,79!", label="OIDC login\n(code + PKCE)", shape=plaintext, fontsize=8, fontcolor="#333333", width=0.1, height=0.1, margin=0];
+  "l_4.1_2.31" [pos="295,166!", label="Bearer JWT", shape=plaintext, fontsize=8, fontcolor="#333333", width=0.1, height=0.1, margin=0];
+  "l_4.85_1.02" [pos="349,73!", label="validate JWT\n(JWKS)", shape=plaintext, fontsize=8, fontcolor="#555555", width=0.1, height=0.1, margin=0];
+  "l_7.73_3.27" [pos="557,235!", label="precompute", shape=plaintext, fontsize=8, fontcolor="#333333", width=0.1, height=0.1, margin=0];
+  lg1 [pos="40,61!", label="implemented", shape=box, style="rounded,filled", fillcolor="#9EC5EE", color="#1F4E79", penwidth=1.3, width=0.95, height=0.24, fontsize=8, fixedsize=true];
+  lg2 [pos="40,36!", label="planned", shape=box, style="rounded,filled,dashed", fillcolor="#EAF2FB", color="#1F4E79", penwidth=1.1, width=0.95, height=0.24, fontsize=8, fixedsize=true];
+
+  // implemented (solid)
+  browser -> frontend;
+  browser -> keycloak [dir=both];
+  frontend -> movies;
+  frontend -> profiles;
+  movies -> keycloak  [style=dotted, color="#666666"];
+  profiles -> keycloak [style=dotted, color="#666666"];
+  movies -> mvdb; profiles -> prdb; keycloak -> kcdb;
+  // planned (dashed)
+  browser -> ingress [style=dashed];
+  ingress -> frontend [style=dashed];
+  frontend -> recsvc [style=dashed];
+  recsvc -> recdb [style=dashed];
+  agent -> recdb [style=dashed];
+  agent -> llm [style=dashed];
+  prom -> grafana [style=dashed, dir=back];
+}

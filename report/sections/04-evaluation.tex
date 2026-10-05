@@ -1,0 +1,36 @@
+% 04-evaluation
+\section{Evaluation}\label{sec:eval}
+
+\subsubsection{Methodology}
+We measure throughput and latency as the number of concurrent clients increases. Load is generated with \TODO{tool, e.g.\ k6~\cite{k6} or Locust} from a separate VM in the same region as the cluster, so that the generator does not compete with the system for CPU and the wide-area network does not distort latencies. Each virtual user runs in a closed loop with \TODO{think time, e.g.\ 0\,s / 1\,s} and draws requests from a weighted mix: browsing \code{GET /movies} (\TODO{40}\%), search \code{GET /movies/search} (\TODO{25}\%), profile reads \code{GET /profiles/\{id\}} and \code{/watched} (\TODO{20}\%), profile writes (\TODO{5}\%), and recommendation requests (\TODO{10}\%). Recommendations are reported separately as \emph{cached} (precomputed by the background agent) or \emph{on demand} (with an inference call). Before the run, \TODO{N} test users are created in Keycloak. Each virtual user gets an access token through a dedicated load-test client with direct access grants (\TODO{to confirm: the realm's current clients have direct access grants disabled, so a dedicated client, or another way to obtain tokens, is needed}) and refreshes it before the 5-minute expiry, so token issuance stays out of the measured path. We step through 1, 10, 50, 100, 200 and \TODO{N} concurrent clients. Each step has a \TODO{60}\,s warm-up and \TODO{180}\,s of steady state and is repeated \TODO{3} times. We report throughput (req/s) and p50/p95/p99 latency, overall and per endpoint. Prometheus collects CPU, memory, JVM, connection-pool and PostgreSQL metrics during each run to find the bottleneck.
+
+\subsubsection{Setup}
+The cluster of Section~\ref{sec:deployment}: one control-plane VM (\code{e2-standard-2}) and two workers (\code{e2-standard-4}, 4\,vCPUs on 2 physical cores each), one replica per service, a 768\,MiB memory limit per Quarkus service, and Ollama running Qwen2.5~3B on the CPUs, without a GPU, one request at a time. \TODO{database resources, any change made for the tests}.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4cm][c]{\dimexpr\columnwidth-2\fboxsep-2\fboxrule}{\centering\small\textcolor{red}{Throughput / latency vs.\ concurrent clients --- to be generated}}}
+\caption{Throughput (req/s) and p95 latency as the number of concurrent clients grows.}
+\label{fig:eval}
+\end{figure}
+
+\begin{table}[t]
+\centering\footnotesize
+\caption{Throughput and latency for the full request mix.}
+\label{tab:eval}
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+\textbf{Clients} & \textbf{req/s} & \textbf{p50 (ms)} & \textbf{p95 (ms)} & \textbf{p99 (ms)} \\
+\midrule
+1   & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+10  & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+50  & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+100 & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+200 & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Results}
+Figure~\ref{fig:eval} and Table~\ref{tab:eval} summarise the results. One data point is already known: on the two \code{e2-standard-4} workers, a single on-demand recommendation took about 4.5 minutes, almost all of it the model reading its 2\,000-token prompt on the CPU (27\,s to read the request and about 4\,minutes to choose among the candidates), which is why requests are asynchronous and why the background agent precomputes the recommendations shown on login.
+\PH{Discussion, once the data is available. Where throughput stops growing (saturation point) and latency rises sharply. Which component saturates first (APIs' CPU, PostgreSQL connection pool, search queries on the GIN/trigram indexes, or the inference engine), supported by the Prometheus metrics. How much slower on-demand recommendations are than cached ones, and so how much the background agent helps. Variance across repetitions. \TODO{numbers}.}
