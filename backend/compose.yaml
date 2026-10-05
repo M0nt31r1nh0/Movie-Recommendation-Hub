@@ -1,0 +1,128 @@
+# The four Quarkus services, built from backend/Dockerfile. They need the infrastructure (databases, Kafka,
+# Keycloak, Ollama) from infra/compose.yaml first: `just local-up` (in the project root) starts both, in order.
+# The infrastructure is in another Compose project, so depends_on can't wait for it here: the just recipe
+# does, with --wait. Between the four services below, depends_on still works.
+
+networks:
+  default:
+    # The network infra/compose.yaml creates, so these services reach postgres, keycloak, kafka and ollama
+    # by name. Start the infrastructure first, or Compose says this network can't be found.
+    name: movies-net
+    external: true
+
+services:
+  movies-service:
+    build:
+      context: ./movies-service
+      dockerfile: ../Dockerfile
+    container_name: movies-service
+    restart: unless-stopped
+    environment:
+      # In a container Quarkus runs in prod mode, which reads these from the environment
+      # (the localhost values in application.properties are only for ./mvnw).
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-movies}
+      QUARKUS_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+      QUARKUS_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      QUARKUS_OIDC_AUTH_SERVER_URL: http://keycloak:8080/realms/movies
+      QUARKUS_HTTP_CORS_ORIGINS: http://localhost:3000
+      QUARKUS_REST_CLIENT_OLLAMA_URL: http://ollama:11434
+      # The embedding model ollama-models downloads.
+      EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      # Java heap at most half the memory limit (as in the Kubernetes manifest).
+      JAVA_MAX_MEM_RATIO: "50"
+    mem_limit: 768m
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # The image has no curl, so ask the port directly (the same trick as Keycloak's healthcheck).
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /q/health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  profiles-service:
+    build:
+      context: ./profiles-service
+      dockerfile: ../Dockerfile
+    container_name: profiles-service
+    restart: unless-stopped
+    environment:
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://profiles-db:5432/profiles
+      QUARKUS_DATASOURCE_USERNAME: ${PROFILES_DB_USER:-profiles}
+      QUARKUS_DATASOURCE_PASSWORD: ${PROFILES_DB_PASSWORD:-profiles}
+      QUARKUS_OIDC_AUTH_SERVER_URL: http://keycloak:8080/realms/movies
+      QUARKUS_HTTP_CORS_ORIGINS: http://localhost:3000
+      QUARKUS_REST_CLIENT_MOVIES_API_URL: http://movies-service:8080
+      JAVA_MAX_MEM_RATIO: "50"
+    mem_limit: 768m
+    ports:
+      - "8081:8080"
+    depends_on:
+      movies-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /q/health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  recommendation-service:
+    build:
+      context: ./recommendation-service
+      dockerfile: ../Dockerfile
+    container_name: recommendation-service
+    restart: unless-stopped
+    environment:
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://recommendations-db:5432/recommendations
+      QUARKUS_DATASOURCE_USERNAME: ${RECOMMENDATIONS_DB_USER:-recommendations}
+      QUARKUS_DATASOURCE_PASSWORD: ${RECOMMENDATIONS_DB_PASSWORD:-recommendations}
+      QUARKUS_OIDC_AUTH_SERVER_URL: http://keycloak:8080/realms/movies
+      KEYCLOAK_REALM_URL: http://keycloak:8080/realms/movies
+      QUARKUS_HTTP_CORS_ORIGINS: http://localhost:3000
+      QUARKUS_REST_CLIENT_PROFILES_API_URL: http://profiles-service:8080
+      QUARKUS_REST_CLIENT_MOVIES_API_URL: http://movies-service:8080
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JAVA_MAX_MEM_RATIO: "50"
+    mem_limit: 768m
+    ports:
+      - "8082:8080"
+    depends_on:
+      movies-service:
+        condition: service_healthy
+      profiles-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /q/health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  recommendation-worker:
+    build:
+      context: ./recommendation-worker
+      dockerfile: ../Dockerfile
+    container_name: recommendation-worker
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      QUARKUS_REST_CLIENT_OLLAMA_URL: http://ollama:11434
+      QUARKUS_REST_CLIENT_MOVIES_API_URL: http://movies-service:8080
+      KEYCLOAK_REALM_URL: http://keycloak:8080/realms/movies
+      RECOMMENDATION_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      JAVA_MAX_MEM_RATIO: "50"
+    mem_limit: 768m
+    ports:
+      - "8083:8083"
+    depends_on:
+      movies-service:
+        condition: service_healthy
+    healthcheck:
+      # The worker's own web server (health checks only) listens on 8083, not 8080.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8083 && printf 'GET /q/health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s

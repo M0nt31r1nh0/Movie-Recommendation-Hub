@@ -2,7 +2,7 @@
 
 A movie catalogue built on [The Movies Dataset](https://www.kaggle.com/datasets/rounakbanik/the-movies-dataset) (about 45,000 TMDB movies). Users register and log in through Keycloak, then browse and search movies, keep a profile of their favourite genres and the movies they've seen, save movies to watch later, and follow other users. A language model running on your machine recommends movies to them, from their profile and the people they follow, or from a request they type, like "a horror movie from the 80s".
 
-It runs in two ways: **on your own machine**, with the infrastructure in Docker Compose and each service started by hand (the [Quick start](#quick-start) below), or **in Google Cloud**, on a self-hosted Kubernetes cluster that Terraform and Ansible create and deploy from nothing ([Deploy to Google Cloud](#deploy-to-google-cloud), with the full guide in [infra/README.md](infra/README.md)).
+It runs in two ways: **on your own machine**, entirely in Docker with one command (the [Quick start](#quick-start) below; the services can also be started by hand for development), or **in Google Cloud**, on a self-hosted Kubernetes cluster that Terraform and Ansible create and deploy from nothing ([Deploy to Google Cloud](#deploy-to-google-cloud), with the full guide in [infra/README.md](infra/README.md)).
 
 | Part | Path | Stack | Port |
 |---|---|---|---|
@@ -22,10 +22,51 @@ Each service has its own database instance, and no service reads another's datab
 
 ## Quick start
 
-Once the tools below are installed, each in its own terminal, from the project root:
+You need [Docker](#docker) and [just](https://github.com/casey/just#installation). From the project root:
 
 ```bash
-docker compose -f infra/compose.yaml up -d                                    # databases, Kafka, Ollama and Keycloak
+just local-first-up    # the first time: infrastructure, movies data, backend, frontend
+just local-up          # every later time (the movies data is already in its volume)
+just local-down        # stop and remove the containers; the data is kept
+```
+
+Then open `http://localhost:3000` and register.
+
+`just local-first-up` runs these steps in order, each waiting until the previous one is healthy:
+
+1. **Infrastructure** (`infra/compose.yaml`): the three databases, Kafka, Ollama and Keycloak. It also waits for the language models to finish downloading.
+2. **The movies data**: it loads `data/movies_dump.sql` into the movies database. It skips this step if the data is already there, so running it twice is safe. It has to happen before the backend starts.
+3. **Backend** (`backend/compose.yaml`): the four Quarkus services, built from `backend/Dockerfile`.
+4. **Frontend** (`frontend/compose.yaml`): the website, built from `frontend/Dockerfile`.
+
+`just local-up` does the same without the data import. The first run takes several minutes: it downloads the images and the models (about 2.2 GB) and builds five images.
+
+These are three Docker Compose projects that share one network, `movies-net`:
+
+| Project | File | Contains |
+|---|---|---|
+| `infra` | `infra/compose.yaml` | `postgres` (movies and Keycloak), `profiles-db`, `recommendations-db`, `kafka`, `ollama`, `ollama-models` (downloads the models, then exits), `keycloak` |
+| `backend` | `backend/compose.yaml` | `movies-service`, `profiles-service`, `recommendation-service`, `recommendation-worker` |
+| `frontend` | `frontend/compose.yaml` | `frontend` |
+
+Compose can't make one project wait for another, so the `justfile` in the project root starts them in order and waits for each to be healthy. Inside a project, `depends_on` does the same: profiles-service waits for movies-service, and so on. Containers reach each other by name (`postgres`, `keycloak`, `kafka:29092`...), while your browser uses the published ports on `localhost`.
+
+Useful commands, from the project root:
+
+```bash
+docker ps                                                             # all containers, with their health
+docker compose -f backend/compose.yaml logs -f movies-service         # a service's log
+docker compose -f backend/compose.yaml up -d --build movies-service   # rebuild one service after changing its code
+```
+
+To delete the data as well, run `just local-down`, then `docker compose -f infra/compose.yaml down -v`. **This deletes every user, profile and downloaded model.** The four services are capped at 768 MB each and Ollama at 4 GB, so the stack needs several gigabytes of memory. On Windows with WSL 2, give it at least 10 GB.
+
+### Running the services by hand (for development)
+
+To work on a service with live reload, start only the infrastructure and run the services yourself, each in its own terminal. Don't run both ways at once, since they use the same ports.
+
+```bash
+docker compose -f infra/compose.yaml up -d
 docker exec -i postgres psql -U postgres -d movies < data/movies_dump.sql     # first time only
 (cd backend/movies-service && ./mvnw quarkus:dev)                             # movies API, port 8080
 (cd backend/profiles-service && ./mvnw quarkus:dev)                           # profiles API, port 8081
@@ -34,7 +75,7 @@ docker exec -i postgres psql -U postgres -d movies < data/movies_dump.sql     # 
 (cd frontend && npm install && npm run dev)                                   # app, port 3000
 ```
 
-Then open `http://localhost:3000` and register. The numbered sections below explain each step.
+The numbered sections below explain each step.
 
 ## Deploy to Google Cloud
 
@@ -56,11 +97,12 @@ Set `image_registry` and `image_tag` in `infra/ansible/group_vars/all.yml` to wh
 
 ## Install and configure
 
-You need four tools. The versions below are the ones the project is developed with.
+The [Quick start](#quick-start) needs only **Docker** and **just**. To work on the code, you also need **Java** and **Node.js**. The versions below are the ones the project is developed with.
 
 | Tool | Version | Needed for |
 |---|---|---|
-| Docker Engine with the Compose plugin | Compose v2+ | The databases, Kafka, Ollama, Keycloak, and the backend tests |
+| Docker Engine with the Compose plugin | Compose v2+ | The whole system in Docker, and the backend tests |
+| [just](https://github.com/casey/just#installation) | any | The Quick start's commands (`just local-up`...) |
 | Java, installed with SDKMAN! | 27 (any JDK 21+ works) | The backend |
 | Node.js with npm, installed with nvm | 24 LTS (20.9+ works) | The frontend |
 | `psql` | any | Optional: querying the database from your machine |
@@ -163,6 +205,7 @@ Nothing else needs configuring if you keep the defaults:
 | Keycloak port | `8180` | `ports` and `KC_HOSTNAME` in `infra/compose.yaml`, `%dev.quarkus.oidc.auth-server-url` in the APIs' `application.properties`, `KEYCLOAK_REALM_URL` for the recommendation services' own logins, and `NEXT_PUBLIC_KEYCLOAK_URL` for the frontend |
 | API ports | `8080` (movies), `8081` (profiles), `8082` (recommendations) | `-Dquarkus.http.port=<port>` when starting an API. Changing them also means updating the frontend's configuration, the `%dev.quarkus.rest-client.*.url` lines of the services that call it, and, for Swagger UI logins, the `movies-swagger-ui` client in Keycloak |
 | Frontend port | `3000` | `npm run dev -- -p <port>` |
+| The same settings in Docker (`just local-first-up`) | The defaults above | The backend containers read `POSTGRES_*`, `PROFILES_DB_*`, `RECOMMENDATIONS_DB_*`, `OLLAMA_MODEL` and `OLLAMA_EMBEDDING_MODEL` from your environment too, so set them in your shell before `just local-first-up`. The ports and addresses are fixed in `backend/compose.yaml`; the frontend's addresses are compiled into its image (`build.args` in `frontend/compose.yaml`), so rebuild it after changing them |
 
 ## 1. Start the databases and Keycloak
 
@@ -210,7 +253,7 @@ docker exec postgres psql -U postgres -d movies -c "select count(*) from movies.
 
 Run the restore only once, into an empty database. Running it again fails because the tables already exist.
 
-To start over from scratch, run `docker compose -f infra/compose.yaml down -v`. **This deletes all the data, including every user account and profile**, and you'll need to restore the dump again.
+To start over from scratch, run `just local-down` first if you started everything with `just` (otherwise the backend containers keep running), then `docker compose -f infra/compose.yaml down -v`. **This deletes all the data, including every user account and profile**, and you'll need to restore the dump again (`just local-first-up` does it for you).
 
 `data/schema.sql` documents the schema as it is in the dump, and how the raw CSVs in `data/raw/` were cleaned. You don't need it to run the project. Later schema changes, such as the search columns, live in each API's migration files instead.
 
@@ -669,10 +712,12 @@ The deployment lives next to the code:
 | `backend/Dockerfile` | Builds any of the four Quarkus services' images from source: `docker build -f backend/Dockerfile backend/<service>` |
 | `frontend/Dockerfile` | The frontend's image (Next.js standalone server), calling the APIs at `/api` and Keycloak at `/auth` on its own origin |
 | `infra/compose.yaml`, `infra/keycloak/`, `infra/init/` | The local infrastructure, and the Keycloak realm both setups import |
+| `backend/compose.yaml`, `frontend/compose.yaml` | The four services and the website in Docker, for the local setup |
+| `justfile` (project root) | The local commands: `just local-first-up`, `just local-up`, `just local-down` |
 | `infra/terraform/` | Google Cloud: network, firewall, static IP, VMs |
 | `infra/ansible/` | Playbooks that install Kubernetes and deploy everything onto it, and their settings (`group_vars/all.yml`) |
 | `infra/k8s/` | The Kubernetes manifests (templates Ansible fills in) and Grafana's dashboard |
-| `infra/mgmt/`, `infra/justfile`, `infra/build-images.sh` | The management container, the deployment's commands, and the image build |
+| `infra/mgmt/`, `infra/justfile`, `infra/build-images.sh` | The management container, the cloud deployment's commands, and the image build |
 
 ## Troubleshooting
 
@@ -687,6 +732,10 @@ The deployment lives next to the code:
 | An API returns `401` even with a token | Tokens expire after 5 minutes: get a new one. If the token comes from your own app, check that it was issued by the `movies-frontend` or `movies-swagger-ui` client, and that its `iss` claim is exactly `http://localhost:8180/realms/movies`. Decoding it at [jwt.io](https://jwt.io) shows both. |
 | Keycloak doesn't become `healthy`, and its logs mention `database "keycloak" does not exist` | The database volume predates Keycloak. Create the database as shown in [step 1](#1-start-the-databases-and-keycloak). |
 | A change to `movies-realm.json` has no effect | The realm is only imported the first time. See [Keycloak admin console](#keycloak-admin-console). |
+| `network movies-net declared as external, but could not be found` | The infrastructure isn't running: `backend/compose.yaml` joins the network that `infra/compose.yaml` creates. Use `just local-up`, or start the infrastructure first. |
+| `Bind for 0.0.0.0:8080 failed: port is already allocated` (or 8081, 8082, 8083, 3000) | A service started by hand with `./mvnw` or `npm run dev` is still running. Stop it, and use one way or the other. |
+| `ports are not available: exposing port TCP 0.0.0.0:11434` on Windows | The Ollama app for Windows is using that port. Quit it from the system tray, then run the recipe again. |
+| A container shows `starting` or `unhealthy` right after the launch | The Java services need up to about 40 seconds. Wait, then check `docker ps`; if it stays unhealthy, read its log: `docker compose -f backend/compose.yaml logs <service>`. |
 | The movies page says `Couldn't load movies: Failed to fetch` | The browser couldn't reach the movies API. Check that it's running, and that port 8080 is forwarded if you use a remote machine. If the browser console mentions CORS, the page's origin isn't in `quarkus.http.cors.origins`. |
 | Log in or Register does nothing, or Keycloak's page doesn't load | The browser can't reach `http://localhost:8180`. Forward port 8180; see [Running on a remote machine](#running-on-a-remote-machine). |
 | Most movies show "No poster" | Expected: TMDB has since deleted most of the poster files the 2017 dataset points to (only about 1 in 10 still exists). |

@@ -145,6 +145,9 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       # Pins the issuer in tokens to the URL browsers and the API use.
       KC_HOSTNAME: http://localhost:8180
+      # Lets the app containers reach Keycloak as keycloak:8080 and still accept tokens issued for
+      # localhost:8180 (the same setting infra/k8s/keycloak.yaml.j2 uses in the cloud).
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HEALTH_ENABLED: "true"
       # Users and realm settings live in Postgres (database created by init/01-keycloak.sql).
       KC_DB: postgres
@@ -172,3 +175,9 @@ volumes:
   recommendations_data:
   kafka_data:
   ollama_models:
+
+networks:
+  default:
+    # A fixed name (not infra_default), so backend/compose.yaml can join it as an external network and reach
+    # postgres, keycloak, kafka and ollama by name. Create it by starting this file first.
+    name: movies-net
