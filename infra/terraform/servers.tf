@@ -8,6 +8,8 @@ resource "google_compute_instance" "master" {
   zone         = var.gcp_zone
   tags         = ["cluster", "master"]
 
+  desired_status = var.vm_state
+
   boot_disk {
     initialize_params {
       image = var.image
@@ -33,6 +35,8 @@ resource "google_compute_instance" "worker" {
   machine_type = var.worker_machine_type
   zone         = var.gcp_zone
   tags         = count.index == 0 ? ["cluster", "worker", "edge"] : ["cluster", "worker"]
+
+  desired_status = var.vm_state
 
   boot_disk {
     initialize_params {

@@ -11,7 +11,7 @@ Times 10pt, 2.0 cm side / 1.5 cm top-bottom margins — matches the spec's limit
 | `sections/02b-backend.tex` | The four services: endpoints, data, search, profiles, recommendation pipeline and background agent, security, tests |
 | `sections/02c-frontend.tex` | Next.js frontend |
 | `sections/02d-deployment.tex` | Local deployment (Compose + `just`), containers, Kubernetes on GCP (Terraform, Ansible), monitoring |
-| `sections/03-advanced.tex` | Advanced feature: persistent state (configuration done; stop/start procedure and validation still to do) |
+| `sections/03-advanced.tex` | Advanced feature: persistent state (stop/start and validation done; the measured recovery time, `\TODO{N}`, still to fill in) |
 | `sections/04-evaluation.tex` | Load-test methodology and setup; results (figure/table) still to do |
 | `sections/05-conclusion.tex` | Conclusion + AI-use declaration placeholder |
 

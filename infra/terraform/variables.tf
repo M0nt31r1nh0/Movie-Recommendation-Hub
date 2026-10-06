@@ -46,6 +46,17 @@ variable "disk_size_gb" {
   default     = 50
 }
 
+variable "vm_state" {
+  description = "RUNNING or TERMINATED. `just stop` and `just start` set it: stopped VMs keep their disks (so every volume) and the static address, and cost almost nothing."
+  type        = string
+  default     = "RUNNING"
+
+  validation {
+    condition     = contains(["RUNNING", "TERMINATED"], var.vm_state)
+    error_message = "vm_state must be RUNNING or TERMINATED."
+  }
+}
+
 variable "image" {
   type    = string
   default = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"

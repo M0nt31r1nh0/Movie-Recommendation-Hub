@@ -1,7 +1,8 @@
 # Deployment to Google Cloud: run `just` to list the recipes.
 #
 # On your computer:   just mgmt-start, just mgmt, just keygen, just images <registry>, just prometheus, just mgmt-stop
-# Inside mgmt:        just infra, just cluster, just platform, just app (or just all), just destroy
+# Inside mgmt:        just infra, just cluster, just platform, just app (or just all), just stop, just start,
+#                     just snapshot, just compare, just destroy
 #
 # Running everything locally, in Docker, is a different set of recipes: see the justfile in the project root.
 
@@ -55,6 +56,63 @@ all: infra cluster platform app
 # Open Prometheus at http://localhost:9090: run on your computer, which needs kubectl (Prometheus isn't public)
 prometheus:
     kubectl --kubeconfig .kube/config -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090
+
+# Stop every VM: the disks (databases, Kafka, models) and the static address stay, and only those are billed
+stop:
+    cd terraform && terraform apply -auto-approve -var vm_state=TERMINATED
+
+# Start the VMs again (refreshing the inventory and the kubeconfig) and wait until the application answers
+start:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    began=$SECONDS
+    # Waits for a command to succeed, for 10 minutes at most.
+    wait_for() {
+        local deadline=$((SECONDS + 600))
+        until "$@" >/dev/null 2>&1; do
+            [ $SECONDS -lt $deadline ] || { echo "Gave up waiting for: $*" >&2; exit 1; }
+            sleep 5
+        done
+    }
+
+    # A VM gets its public address when it starts, so Terraform's state has none until after: the first apply
+    # only starts the VMs (ansible/inventory.ini, which would change mid-apply, is left out); the second
+    # reads their new addresses and rewrites the inventory.
+    (cd terraform && terraform apply -auto-approve -var vm_state=RUNNING \
+        -target=google_compute_instance.master -target=google_compute_instance.worker)
+    (cd terraform && terraform apply -auto-approve -var vm_state=RUNNING)
+    master=$(terraform -chdir=terraform output -raw master_ip)
+    [ -n "$master" ] || { echo "Terraform has no address for the master: are the VMs running?" >&2; exit 1; }
+    url=$(terraform -chdir=terraform output -raw public_url)
+
+    # The API server's certificate names the master's first address, but also "kubernetes": checking it
+    # against that name lets kubectl follow the new address.
+    kubectl config set-cluster kubernetes --kubeconfig .kube/config \
+        --server="https://$master:6443" --tls-server-name=kubernetes
+
+    echo "Waiting for the Kubernetes API, then the nodes..."
+    wait_for kubectl get nodes
+    kubectl wait --for=condition=Ready nodes --all --timeout=10m
+
+    echo "Waiting for Kafka, the databases and the application..."
+    kubectl -n kafka wait pod -l strimzi.io/cluster=movies-kafka --for=condition=Ready --timeout=15m
+    for kind in statefulset deployment; do
+        kubectl get "$kind" -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name </dev/null |
+        while read -r ns name; do kubectl -n "$ns" rollout status "$kind/$name" --timeout=15m </dev/null; done
+    done
+
+    echo "Waiting for $url to answer..."
+    wait_for curl -ksf "$url/auth/realms/movies"
+    wait_for curl -ksf "$url/"
+    echo "Everything answers, $((SECONDS - began)) seconds after the start: $url"
+
+# Record the application's state to evidence/<label>.txt, to compare before and after a stop and start
+snapshot label:
+    ./evidence/snapshot.sh {{label}}
+
+# Compare two snapshots: prints IDENTICAL, or the lines that differ
+compare before after:
+    ./evidence/compare.sh {{before}} {{after}}
 
 # Delete every cloud resource (VMs, disks, static IP, network): all data is lost
 destroy:

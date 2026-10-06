@@ -12,3 +12,6 @@ ansible/tls/
 
 # Logs of local runs
 *.log
+
+# Output of the persistence tests (the scripts and the README in evidence/ are tracked)
+evidence/*.txt

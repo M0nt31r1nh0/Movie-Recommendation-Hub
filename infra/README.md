@@ -184,6 +184,35 @@ kubectl -n movies logs deploy/recommendation-worker -f    # each recommendation,
 - **New application code:** build with a new tag (`just images docker.io/<user> v2`), set `image_tag: v2`, then `just app`. With `image_tag: latest`, every `just app` pulls the images again.
 - **Changed manifests or settings:** `just app` (or `just platform`) again.
 
+### Stop and start the VMs
+
+To pause the deployment without losing anything (overnight, say), stop the VMs instead of destroying them. In the management container:
+
+```bash
+just stop     # all three VMs stopped
+just start    # all three VMs started again, then waits until the application answers
+```
+
+- **`just stop`** runs `terraform apply -auto-approve -var vm_state=TERMINATED`. The variable `vm_state` (`terraform/variables.tf`, default `RUNNING`) is passed to every VM as `desired_status` (`terraform/servers.tf`). A change of that argument makes the Google provider call the Compute Engine API's `instances.stop` for each VM, and GCE shuts the guest OS down cleanly. It takes about 1.5 minutes.
+- **`just start`** (recipe `start` in the `justfile`):
+  1. `terraform apply ... -var vm_state=RUNNING -target=google_compute_instance.master -target=google_compute_instance.worker` starts the VMs, and only them.
+  2. A second, full `terraform apply` rewrites `ansible/inventory.ini`. GCE releases the VMs' ephemeral public addresses while they are stopped, so Terraform's state has none for the master and worker2 until they are running again, and after a start they can be different (in our runs they swapped). The first apply is limited to the VMs because the inventory file would otherwise change in the middle of the same apply, which Terraform rejects. The second apply reads the new addresses, and the recipe stops with an error if the master has none.
+  3. `kubectl config set-cluster kubernetes ... --server=https://<master>:6443 --tls-server-name=kubernetes` points `.kube/config` at the master's current address. The API server's certificate lists the master's first address and also the name `kubernetes`, so `kubectl` accepts the new address when it checks the certificate against that name.
+  4. It waits for the Kubernetes API, every node `Ready`, the Kafka pods, every StatefulSet and Deployment (`kubectl rollout status`), and for the application to answer at `/auth/realms/movies` and `/`. The last line it prints is `Everything answers, N seconds after the start`.
+  <!-- TODO: add the measured time once the final test is done. -->
+
+Stopped VMs aren't billed for CPU. Only their disks and the static address are, and the disks are what keeps the data. The application's address (the static IP) never changes.
+
+**What survives a stop and start:** every database (movies, profiles, recommendations, Keycloak), Kafka's topics and queued messages, Ollama's models and Prometheus's history, because they live on the VMs' disks.
+
+**What doesn't:**
+
+- `just destroy` deletes the disks, so everything is lost.
+- A recommendation being computed when the VMs stop fails with *Connection was closed*. A failed typed request stays visible to its user for an hour, and a failed profile request is deleted, leaving the user's previous set; the background agent then tries again after its back-off (30 minutes).
+- The first minute after a start is noisy: pods restart and log *OIDC Server is not available* or Kafka *Node may not be available*, because the services start before Keycloak and Kafka are reachable. They recover on their own.
+
+To check this yourself, see [Testing persistence](#testing-persistence).
+
 ### Destroy
 
 **When you're done, destroy everything**, since the VMs cost about 0.40 USD an hour (~10 USD a day) while they exist:
@@ -192,13 +221,39 @@ kubectl -n movies logs deploy/recommendation-worker -f    # each recommendation,
 just destroy
 ```
 
-This deletes every resource Terraform created, including the disks: **all data is lost**, including user accounts. Then check that nothing is left, in the console or with:
+This deletes every resource Terraform created, including the disks: **all data is lost**, including user accounts (to pause without losing data, [stop the VMs](#stop-and-start-the-vms) instead). Then check that nothing is left, in the console or with:
 
 ```bash
 gcloud compute instances list --project $PROJECT     # and: disks list, addresses list
 ```
 
 The project, the service account and the images on Docker Hub stay, and cost nothing. The next deploy starts again from step 3 (and step 1 only if the code changed).
+
+## Testing persistence
+
+[`evidence/`](evidence/) holds two scripts that show nothing is lost across a stop and start. Run them in the management container, from `infra/`. Their output goes to `evidence/*.txt`, which git ignores.
+
+```bash
+just snapshot before       # record the state (see below)
+just stop
+just start
+just snapshot after
+just compare before after  # prints "IDENTICAL: nothing lost", or the lines that differ
+```
+
+`just snapshot <label>` runs `evidence/snapshot.sh`, which writes `evidence/<label>.txt` with: the recommendation requests by status, the row counts of the profiles database, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics, Ollama's models and the volumes' status. It also writes `<label>-pods.txt`, the pod list, for reference. `just compare` runs `evidence/compare.sh`, which ignores the "N minutes ago" text of the models.
+
+**Before the first snapshot, wait until no recommendation request is `PENDING`.** A request in flight when the VMs stop fails by design (see [Stop and start the VMs](#stop-and-start-the-vms)), so the two snapshots would differ for a legitimate reason: a failed profile request is deleted.
+
+**What the result means:** identical files mean that every database, topic, model and volume came back unchanged, which is what persistent state requires. Check by hand in the browser too: log in as an existing user, and see their follows, watched movies and recommendations.
+
+**Requests in flight.** A user can have only one typed request at a time (the API answers 409 otherwise), so use three users, in separate browser windows, each sending one question. The worker handles one job at a time, so one runs and two wait in Kafka. Stop the VMs about 30 seconds later, start them, and look at the requests:
+
+```bash
+kubectl -n movies exec recommendations-db-0 -c postgres -- psql -U recommendations -d recommendations -c "select request_id, left(prompt,30) as prompt, status, error from recommendations.request where kind = 'PROMPT' order by created_at desc"
+```
+
+In our test, the request that was running failed with *Connection was closed* and its user was told so, while the two that were waiting in Kafka were processed once the worker was back. A request that stays `PENDING` for more than an hour is marked `FAILED` by the sweeper (`recommendation.timeout`), so nothing stays lost for good.
 
 ## How the application is configured here
 
@@ -254,3 +309,6 @@ To make them faster: fewer candidates (add `RECOMMENDATION_CANDIDATES`, default 
 | The browser says *Your connection is not private* | Expected with the self-signed certificate: see [Check that it works](#4-check-that-it-works) for how to proceed, or [use a real certificate](#using-a-real-certificate). |
 | Login redirects fail with *Invalid redirect uri* | The realm was imported with another `public_url`. Fix the `movies-frontend` client's URLs in the admin console. Or start Keycloak over, **deleting every user account**: `kubectl -n movies delete deployment/keycloak statefulset/keycloak-db pvc/data-keycloak-db-0`, then `just app`. |
 | Recommendations take minutes | Expected on CPUs: see [Why recommendations are slow](#why-recommendations-are-slow). |
+| `just start` stops with *Terraform has no address for the master* | The VMs did not start (check the console: a zone can lack capacity). Run `just start` again after a few minutes. |
+| After `just start`, pods restart and the logs say *OIDC Server is not available* or *Node may not be available* | Expected for about a minute: the services start before Keycloak and Kafka are reachable, and recover on their own. |
+| Grafana's panels show a red triangle and *origin not allowed* | Grafana refuses a request whose `Origin` differs from the `Host` it received. NGINX drops every `proxy_set_header` of the server for a `location` that sets its own, so `/grafana/` must repeat `Host` and the `X-Forwarded-*` headers (`k8s/nginx.yaml.j2`). Apply with `just app`. |

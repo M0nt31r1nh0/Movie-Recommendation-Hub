@@ -93,7 +93,7 @@ just mgmt                                                 # a shell in it, then:
 just all                                                  # VMs + Kubernetes + platform + application, ~25 minutes
 ```
 
-Set `image_registry` and `image_tag` in `infra/ansible/group_vars/all.yml` to what you pushed. At the end, `just all` prints the application's address (`https://<static IP>`), Grafana's (`/grafana`) and Keycloak's admin console (`/auth/admin`); the passwords are in `infra/ansible/.secrets/`. **When you're done, `just destroy`**: the VMs cost about 0.40 USD an hour while they exist.
+Set `image_registry` and `image_tag` in `infra/ansible/group_vars/all.yml` to what you pushed. At the end, `just all` prints the application's address (`https://<static IP>`), Grafana's (`/grafana`) and Keycloak's admin console (`/auth/admin`); the passwords are in `infra/ansible/.secrets/`. **When you're done, `just destroy`**: the VMs cost about 0.40 USD an hour while they exist. To pause it without losing data, `just stop` and `just start` stop and start all the VMs ([infra/README.md → Stop and start the VMs](infra/README.md#stop-and-start-the-vms)); `just destroy` deletes everything.
 
 ## Install and configure
 
