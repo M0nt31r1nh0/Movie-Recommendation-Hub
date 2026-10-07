@@ -4,7 +4,7 @@ These scripts show that stopping all the VMs and starting them again, or destroy
 
 | File | What it does |
 |---|---|
-| `snapshot.sh <label>` (`just snapshot <label>`) | Writes `<label>.txt`: the recommendation requests by status, the profiles database's row counts, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics and its consumer groups' offsets, Ollama's models and the volumes' status. Also writes `<label>-pods.txt`, the pod list, for reference. |
+| `snapshot.sh <label>` (`just snapshot <label>`) | Writes `<label>.txt`: the recommendation requests by status, the profiles database's row counts, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics and its consumer groups' offsets, Ollama's models, Prometheus's oldest sample (a new Prometheus would have a later one), when Grafana's users and organisations were created (read from a copy of its database) and the volumes' status. Also writes `<label>-pods.txt`, the pod list, for reference. |
 | `compare.sh <before> <after>` (`just compare <before> <after>`) | Compares two snapshots, ignoring the models' "N minutes ago" text and differences in spacing. Prints `IDENTICAL: nothing lost`, or the lines that differ. |
 | `markers.sh` | Prints the markers of the destroy test (2026-10-07): a `persistence_check` row written in each database, the `persistence-check` topic's offsets and Kafka's cluster ID. Redirect it to `markers-<label>.txt` before and after, and `diff` them. |
 

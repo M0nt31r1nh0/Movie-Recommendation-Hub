@@ -50,6 +50,29 @@ sql() {
   echo "== ollama models"
   kubectl -n movies exec deploy/ollama -- ollama list
 
+  # The oldest sample Prometheus holds: a new, empty Prometheus would have a later one.
+  echo "== prometheus: its oldest sample"
+  # Through the Kubernetes API server's proxy to Prometheus's Service (its image has no wget or curl).
+  kubectl get --raw '/api/v1/namespaces/monitoring/services/monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=min(prometheus_tsdb_lowest_timestamp_seconds)' \
+    | python3 -c 'import datetime, json, sys
+r = json.load(sys.stdin)["data"]["result"]
+print(datetime.datetime.fromtimestamp(float(r[0]["value"][1]), datetime.timezone.utc).isoformat() if r else "no samples")'
+
+  # When Grafana's database was created, read from a copy of it: a new, empty Grafana would have later dates.
+  # Copied from the worker's data disk with Ansible (Grafana's image has no cat or tar to copy it out).
+  echo "== grafana: its users and organisations, and when they were created"
+  node=$(kubectl get pv monitoring-monitoring-grafana -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}')
+  ansible "$node" -b -m ansible.builtin.fetch \
+    -a "src=/mnt/data/monitoring/monitoring-grafana/grafana.db dest=$PWD/$label-grafana.db flat=yes" >/dev/null
+  python3 - "$label-grafana.db" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+for table, column in (("org", "name"), ("user", "login")):
+    for name, created in db.execute(f"select {column}, created from \"{table}\" order by id"):
+        print(table, name, created)
+PY
+  rm -f "$label-grafana.db"
+
   echo "== volumes"
   kubectl get pvc -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase
 } 2>&1 | tee "$label.txt"

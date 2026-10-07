@@ -1,6 +1,6 @@
 # Cluster-wide pieces the application relies on, installed once:
 #   - the volumes (k8s/platform/storage.yaml.j2): one folder per PersistentVolumeClaim (databases, Kafka,
-#     Ollama's models, Prometheus) on a worker's data disk, which outlives the VMs;
+#     Ollama's models, Prometheus, Grafana) on a worker's data disk, which outlives the VMs;
 #   - Strimzi: the operator that runs Kafka from a Kafka resource (k8s/kafka.yaml.j2);
 #   - kube-prometheus-stack: Prometheus, Grafana, node-exporter and kube-state-metrics, plus the
 #     ServiceMonitor/PodMonitor resources the application uses to say what to scrape.
@@ -18,6 +18,30 @@
     # Open to every user, as local-path-provisioner made them: PostgreSQL, Kafka and Prometheus run as
     # different users, and each one makes its own subfolder with its own permissions. A folder that is
     # already there keeps what's in it.
+    # Grafana keeps the admin password it was created with: a new one from a lost .secrets folder
+    # wouldn't let anyone in.
+    - name: Look for Grafana's database on its data disk
+      ansible.builtin.stat:
+        path: "{{ data_dir }}/monitoring/monitoring-grafana/grafana.db"
+      register: grafana_db
+      when: inventory_hostname == (persistent_volumes | selectattr('claim', 'eq', 'monitoring-grafana') | first).node
+
+    - name: If there is one, look for its admin password in {{ secrets_dir }}
+      delegate_to: localhost
+      become: false
+      ansible.builtin.stat:
+        path: "{{ secrets_dir }}/grafana-admin"
+      register: grafana_secret
+      when: grafana_db.stat.exists | default(false)
+
+    - name: Check that it isn't missing
+      ansible.builtin.assert:
+        that: grafana_secret.stat.exists
+        fail_msg: >-
+          The data disk holds Grafana's database, created with an admin password that is no longer in
+          {{ secrets_dir }}/grafana-admin. Put back that folder from the deployment that created it.
+      when: grafana_db.stat.exists | default(false)
+
     - name: Create {{ data_dir }}/<namespace>/<claim> for this worker's volumes
       ansible.builtin.file:
         path: "{{ data_dir }}/{{ item.namespace }}/{{ item.claim }}"

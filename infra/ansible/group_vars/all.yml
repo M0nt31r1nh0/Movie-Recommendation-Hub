@@ -63,6 +63,8 @@ persistent_volumes:
   - { namespace: kafka,      claim: data-0-movies-kafka-dual-2, size: 5Gi,  node: worker1 }
   # kube-prometheus-stack's (storageSpec in k8s/platform/kube-prometheus-stack.values.yaml.j2).
   - { namespace: monitoring, claim: data-prometheus-monitoring-kube-prometheus-prometheus-0, size: 10Gi, node: worker2 }
+  # Grafana's database: users, their preferences, and whatever is made in its UI (persistence in the same file).
+  - { namespace: monitoring, claim: monitoring-grafana, size: 2Gi, node: worker2 }
 
 # --- Secrets --------------------------------------------------------------------------------------
 # Generated on the first run into ansible/.secrets/ (not committed) and reused afterwards: that folder

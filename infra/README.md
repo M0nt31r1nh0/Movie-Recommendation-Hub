@@ -258,18 +258,19 @@ The static IP is kept because Keycloak's realm, which is in its database on the 
 | `movies/data-movies-db-0`, `data-profiles-db-0`, `data-recommendations-db-0`, `data-keycloak-db-0` | `/mnt/data/movies/<claim>` | worker1 |
 | `movies/ollama-models` | `/mnt/data/movies/ollama-models` | worker2 |
 | `kafka/data-0-movies-kafka-dual-0`, `-2` / `-1` | `/mnt/data/kafka/<claim>` | worker1 / worker2 |
-| `monitoring/data-prometheus-monitoring-kube-prometheus-prometheus-0` | `/mnt/data/monitoring/<claim>` | worker2 |
+| `monitoring/data-prometheus-monitoring-kube-prometheus-prometheus-0` (Prometheus's history, 7 days) | `/mnt/data/monitoring/<claim>` | worker2 |
+| `monitoring/monitoring-grafana` (Grafana's database: users, preferences, anything made in its UI) | `/mnt/data/monitoring/monitoring-grafana` | worker2 |
 
 Each is a local volume pinned to its worker and to its claim by namespace and name (`claimRef`), with `Retain`: the claim of that name in a new cluster gets the same folder, and its pod is scheduled on that worker. Don't move a volume to another worker once it has data.
 
 **Starting from the data, or from nothing.** Each component already initialises only what's empty: PostgreSQL runs `initdb` only on an empty folder, Flyway applies only the migrations not yet applied, `04-app.yml` loads the movies dump only if the movies table is missing, Keycloak imports the realm only if it doesn't exist, and Ollama downloads only the models it doesn't have. Two more checks in `04-app.yml`:
 
 - **Kafka's cluster ID.** Strimzi gives a new Kafka resource a new cluster ID, and brokers refuse data written under another one. So, on a new cluster, `04-app.yml` reads `cluster.id` from broker 0's `meta.properties` on the data disk. If there is one, it creates the Kafka resource paused (`strimzi.io/pause-reconciliation`), sets that ID in its status, and lets Strimzi start it: Strimzi's procedure for [recovering a cluster from its volumes](https://strimzi.io/docs/operators/latest/deploying#cluster-recovery_str).
-- **The passwords.** If a database already has data but its password (or, for Keycloak's, the service accounts' secrets) is missing from `ansible/.secrets/`, it stops with an error rather than deploy services that can't log in.
+- **The passwords.** If a database already has data but its password (or, for Keycloak's, the service accounts' secrets) is missing from `ansible/.secrets/`, it stops with an error rather than deploy services that can't log in. `03-platform.yml` does the same for Grafana's admin password.
 
 **A deployment made before the data disks** (its volumes on the boot disks, through local-path-provisioner) can't switch in place: a StatefulSet's claims can't change storage class. With this version, run `just destroy`, then `just all`: the old data is lost and the new deployment starts empty, but the static IP is kept. `just destroy` only drops it from the VMs' state (`terraform state rm`, before destroying), and `just persistent` imports it. Use `just destroy` rather than a bare `terraform destroy` for that one time: Terraform's destroy would delete the address.
 
-Not kept: Grafana's own settings (its dashboard and data source come from the playbooks), the TLS certificate (self-signed again for the same IP), and Kubernetes itself (etcd), which is rebuilt.
+Not kept: the TLS certificate (self-signed again for the same IP) and Kubernetes itself (etcd), which is rebuilt. The Movies dashboard and Prometheus as Grafana's data source come from the repository each time, and Grafana keeps everything else in its database.
 
 ## Testing persistence
 
@@ -293,7 +294,7 @@ just snapshot rebuilt
 just compare before rebuilt
 ```
 
-`just snapshot <label>` runs `evidence/snapshot.sh`, which writes `evidence/<label>.txt` with: the recommendation requests by status, the row counts of the profiles database, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics and its consumer groups' offsets, Ollama's models and the volumes' status. It also writes `<label>-pods.txt`, the pod list, for reference. `just compare` runs `evidence/compare.sh`, which ignores the "N minutes ago" text of the models.
+`just snapshot <label>` runs `evidence/snapshot.sh`, which writes `evidence/<label>.txt` with: the recommendation requests by status, the row counts of the profiles database, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics and its consumer groups' offsets, Ollama's models, Prometheus's oldest sample, when Grafana's users and organisations were created and the volumes' status. It also writes `<label>-pods.txt`, the pod list, for reference. `just compare` runs `evidence/compare.sh`, which ignores the "N minutes ago" text of the models.
 
 **Before the first snapshot, wait until no recommendation request is `PENDING`.** A request in flight when the VMs stop fails by design (see [Stop and start the VMs](#stop-and-start-the-vms)), so the two snapshots would differ for a legitimate reason: a failed profile request is deleted.
 

@@ -41,7 +41,19 @@ prometheus:
               storage: 10Gi
 
 grafana:
+  # Only used when Grafana creates its database: kept in ansible/.secrets/ as long as the data disk.
   adminPassword: "{{ grafana_admin_password }}"
+  # Its database (SQLite: users, preferences, anything made in the UI) on a worker's data disk, as
+  # monitoring/monitoring-grafana (persistent_volumes in ansible/group_vars/all.yml). Recreate: never two
+  # Grafanas on the same file during an update.
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: {{ storage_class }}
+    accessModes: [ReadWriteOnce]
+    size: 2Gi
+  deploymentStrategy:
+    type: Recreate
   # Served by NGINX at {{ public_url }}/grafana/.
   grafana.ini:
     server:
