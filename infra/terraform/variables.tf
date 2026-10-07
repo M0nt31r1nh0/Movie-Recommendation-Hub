@@ -35,19 +35,19 @@ variable "worker_machine_type" {
 }
 
 variable "worker_count" {
-  description = "Free-trial accounts are limited to 8 vCPUs in all: 1 x e2-standard-2 + 2 x e2-standard-4 fits exactly."
+  description = "Free-trial accounts are limited to 8 vCPUs in all: 1 x e2-standard-2 + 2 x e2-standard-4 fits exactly. The persistent stack makes one data disk per worker."
   type        = number
   default     = 2
 }
 
 variable "disk_size_gb" {
-  description = "Per VM: container images (Ollama's is ~3 GB), the models (~2.5 GB) and the databases."
+  description = "Each worker's boot disk: the system and the container images (Ollama's is ~3 GB). The volumes are on the data disks (persistent/)."
   type        = number
-  default     = 50
+  default     = 30
 }
 
 variable "vm_state" {
-  description = "RUNNING or TERMINATED. `just stop` and `just start` set it: stopped VMs keep their disks (so every volume) and the static address, and cost almost nothing."
+  description = "RUNNING or TERMINATED. `just stop` and `just start` set it: stopped VMs keep their disks and cost almost nothing."
   type        = string
   default     = "RUNNING"
 

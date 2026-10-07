@@ -1,6 +1,6 @@
 # Prepares every VM for Kubernetes: kernel settings, containerd, and kubelet, kubeadm and kubectl.
 # The same steps as lab 4's ansible-k8s-install.yml, with Ansible modules instead of shell scripts, so
-# running it again changes nothing.
+# running it again changes nothing. Then mounts each worker's data disk, where the volumes live.
 - name: Prepare the nodes
   hosts: cluster
   become: true
@@ -108,3 +108,71 @@
       ansible.builtin.systemd_service:
         name: kubelet
         enabled: true
+
+# Each worker's data disk (Terraform's persistent stack) holds every volume of the cluster, and outlives
+# the VM: a new VM gets the old disk back, with its data.
+- name: Mount the data disks
+  hosts: workers
+  become: true
+  gather_facts: false
+  vars:
+    device: /dev/disk/by-id/google-data
+  tasks:
+    - name: Wait for the data disk ({{ device }})
+      ansible.builtin.wait_for:
+        path: "{{ device }}"
+        timeout: 60
+
+    - name: Format it, only if it has no filesystem yet (a disk with data is never formatted again)
+      community.general.filesystem:
+        dev: "{{ device }}"
+        fstype: ext4
+
+    - name: Mount it at {{ data_dir }}, now and at boot
+      ansible.posix.mount:
+        path: "{{ data_dir }}"
+        src: "{{ device }}"
+        fstype: ext4
+        opts: defaults,nofail,discard
+        state: mounted
+
+    # Otherwise, if the disk were late or missing at boot, pods would start on the empty {{ data_dir }}
+    # folder of the boot disk: a database there would look new, and start empty.
+    - name: Create kubelet's drop-in folder
+      ansible.builtin.file:
+        path: /etc/systemd/system/kubelet.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Start kubelet only once the data disk is mounted
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/kubelet.service.d/20-data-disk.conf
+        content: |
+          [Unit]
+          RequiresMountsFor={{ data_dir }}
+        mode: "0644"
+      register: kubelet_dropin
+
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: kubelet_dropin.changed
+
+    - name: Read when the disk was first used
+      ansible.builtin.slurp:
+        src: "{{ data_dir }}/.created"
+      register: created
+      failed_when: false
+
+    - name: Write it, the first time
+      ansible.builtin.copy:
+        dest: "{{ data_dir }}/.created"
+        content: "{{ now(utc=true).isoformat() }}\n"
+        mode: "0644"
+      when: created.content is not defined
+
+    - name: New disk, or data from an earlier deployment
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Data disk in use since ' + (created.content | b64decode | trim) + ': the volumes keep their data'
+             if created.content is defined else 'New data disk: the volumes start empty' }}

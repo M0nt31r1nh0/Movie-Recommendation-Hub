@@ -26,8 +26,9 @@ frontend      /api/movies  /api/profiles  /api/recommendations   /auth/ ─► K
 | Folder | What |
 |---|---|
 | `mgmt/` | The management container: Terraform, Ansible, kubectl and gcloud, so your computer only needs Docker |
-| `terraform/` | The VPC, firewall, static IP and VMs (1 control plane + 2 workers by default), and Ansible's inventory |
-| `ansible/` | The playbooks: `01-nodes`, `02-cluster` (Kubernetes), `03-platform` (storage, Strimzi, Prometheus/Grafana), `04-app` (the application) |
+| `terraform/` | The VPC, firewall and VMs (1 control plane + 2 workers by default), and Ansible's inventory |
+| `terraform/persistent/` | What outlives the VMs, in its own Terraform state: one data disk per worker (every volume) and the static IP. See [Persistent data](#persistent-data) |
+| `ansible/` | The playbooks: `01-nodes`, `02-cluster` (Kubernetes), `03-platform` (volumes, Strimzi, Prometheus/Grafana), `04-app` (the application) |
 | `k8s/` | The Kubernetes manifests, as templates Ansible fills in, and Grafana's dashboard |
 | `build-images.sh` | Builds the five application images and pushes them to a registry |
 
@@ -147,9 +148,9 @@ Or one step at a time, which is easier to follow (and to show in the video):
 
 | Step | What it does | Took (2026-10-02) |
 |---|---|---|
-| `just infra` | Terraform: network, firewall, static IP, VMs; writes `ansible/inventory.ini`. Shows the plan and asks for `yes` | ~1 min |
-| `just cluster` | Prepares the VMs (containerd, kubelet, kubeadm), `kubeadm init`, Calico, joins the workers, labels the edge node; saves the kubeconfig to `.kube/config` | ~5 min |
-| `just platform` | local-path-provisioner (storage), Strimzi (Kafka operator), kube-prometheus-stack (Prometheus, Grafana) | ~4 min |
+| `just infra` | Terraform, twice: first `terraform/persistent/` (the data disks and the static IP, created the first time and reused after), then the network, firewall and VMs, with the data disks attached; writes `ansible/inventory.ini`. Each shows its plan and asks for `yes` | ~1 min |
+| `just cluster` | Prepares the VMs (containerd, kubelet, kubeadm, the data disks mounted at `/mnt/data`), `kubeadm init`, Calico, joins the workers, labels the edge node; saves the kubeconfig to `.kube/config` | ~5 min |
+| `just platform` | The volumes (folders on the data disks), Strimzi (Kafka operator), kube-prometheus-stack (Prometheus, Grafana) | ~4 min |
 | `just app` | Databases (and the movies dump, the first time), Kafka, Ollama and its models, Keycloak, the services, the frontend, NGINX, monitoring | ~12 min the first time (the models are ~2.5 GB) |
 
 Every step can run again: it only changes what differs (a second `just app` restarts nothing, and doesn't load the dump again).
@@ -161,7 +162,7 @@ At the end, `just app` prints the addresses:
 - **Keycloak's admin console:** `https://<static IP>/auth/admin`, user `admin`, password from `cat ansible/.secrets/keycloak-admin`.
 - **Prometheus:** not public. On your computer (with kubectl installed), `just prometheus`, then open `http://localhost:9090`.
 
-`ansible/.secrets/` holds every password the playbooks generated (databases, Keycloak, Grafana, the two service accounts' secrets). It's ignored by git; **keep it**, since the next `just app` must use the same values the databases and Keycloak were created with.
+`ansible/.secrets/` holds every password the playbooks generated (databases, Keycloak, Grafana, the two service accounts' secrets). It's ignored by git; **keep it as long as the data disks**, since the databases and Keycloak keep the values they were created with. `just app` stops with an error if the disks hold a database whose password is no longer there.
 
 ### 4. Check that it works
 
@@ -203,11 +204,10 @@ just start    # all three VMs started again, then waits until the application an
 
 Stopped VMs aren't billed for CPU. Only their disks and the static address are, and the disks are what keeps the data. The application's address (the static IP) never changes.
 
-**What survives a stop and start:** every database (movies, profiles, recommendations, Keycloak), Kafka's topics and queued messages, Ollama's models and Prometheus's history, because they live on the VMs' disks.
+**What survives a stop and start:** every database (movies, profiles, recommendations, Keycloak), Kafka's topics and queued messages, Ollama's models and Prometheus's history, because they live on the workers' data disks. They also survive `just destroy` (see [Persistent data](#persistent-data)).
 
 **What doesn't:**
 
-- `just destroy` deletes the disks, so everything is lost.
 - A recommendation being computed when the VMs stop fails with *Connection was closed*. A failed typed request stays visible to its user for an hour, and a failed profile request is deleted, leaving the user's previous set; the background agent then tries again after its back-off (30 minutes).
 - The first minute after a start is noisy: pods restart and log *OIDC Server is not available* or Kafka *Node may not be available*, because the services start before Keycloak and Kafka are reachable. They recover on their own.
 
@@ -215,13 +215,21 @@ To check this yourself, see [Testing persistence](#testing-persistence).
 
 ### Destroy
 
-**When you're done, destroy everything**, since the VMs cost about 0.40 USD an hour (~10 USD a day) while they exist:
+**When you're done, destroy the VMs**, since they cost about 0.40 USD an hour (~10 USD a day) while they exist:
 
 ```bash
 just destroy
 ```
 
-This deletes every resource Terraform created, including the disks: **all data is lost**, including user accounts (to pause without losing data, [stop the VMs](#stop-and-start-the-vms) instead). Then check that nothing is left, in the console or with:
+This deletes the VMs, their boot disks, the network and the firewall. **The data is kept**: the workers' data disks and the static IP belong to the persistent stack, which `just destroy` doesn't touch. While destroyed, they cost about 15 USD a month (two 40 GB disks, ~8 USD, and the unused static IP, ~7 USD). The next `just all` finds them, attaches them to the new VMs, and the application comes back with every account, profile, recommendation, Kafka message and model (see [Persistent data](#persistent-data)).
+
+To delete the data too, after `just destroy`:
+
+```bash
+just destroy-data      # the data disks and the static IP: everything is lost
+```
+
+Then check that nothing is left, in the console or with:
 
 ```bash
 gcloud compute instances list --project $PROJECT     # and: disks list, addresses list
@@ -229,9 +237,43 @@ gcloud compute instances list --project $PROJECT     # and: disks list, addresse
 
 The project, the service account and the images on Docker Hub stay, and cost nothing. The next deploy starts again from step 3 (and step 1 only if the code changed).
 
+## Persistent data
+
+Every piece of state the application has lives on a **data disk**, one per worker, separate from the VMs: the four databases, Kafka's brokers, Ollama's models and Prometheus's history. A new cluster on new VMs finds the same files, and starts from them; the first time, the disks are blank, and everything starts empty.
+
+**Terraform: two stacks.**
+
+- `terraform/persistent/` creates the data disks (`g17-data-worker1`, `g17-data-worker2`, 40 GB each, `data_disk_size_gb`) and the static IP (`g17-edge`), in its own state (`terraform/persistent/terraform.tfstate`). It reads the same `terraform.tfvars`.
+- `terraform/` (the VMs) only looks them up by name, and attaches each worker's disk to it. So `terraform destroy` there (`just destroy`) can't delete them; `just destroy-data` does, in the persistent stack.
+- `just persistent`, the first half of `just infra`, checks the project before applying: a disk or address that exists in the project but not in its state (left by an earlier deployment whose state was lost, or created by a teammate) is imported, and reused; one that doesn't exist is created. It prints which.
+
+The static IP is kept because Keycloak's realm, which is in its database on the data disk, names the public address in its login redirects: a new address would need the realm edited.
+
+**The nodes.** `01-nodes.yml` formats a worker's data disk only if it has no filesystem (a blank disk), and mounts it at `/mnt/data`. kubelet only starts once it's mounted (`RequiresMountsFor`): otherwise, at boot, pods could start on the empty `/mnt/data` folder of the boot disk, and a database there would look new. The play prints `New data disk` or `Data disk in use since <date>`.
+
+**Kubernetes.** There is no storage provisioner. `03-platform.yml` creates the `persistent` StorageClass and one PersistentVolume per claim, from `persistent_volumes` in `ansible/group_vars/all.yml` (`k8s/platform/storage.yaml.j2`):
+
+| Volume (claim) | Folder | Worker |
+|---|---|---|
+| `movies/data-movies-db-0`, `data-profiles-db-0`, `data-recommendations-db-0`, `data-keycloak-db-0` | `/mnt/data/movies/<claim>` | worker1 |
+| `movies/ollama-models` | `/mnt/data/movies/ollama-models` | worker2 |
+| `kafka/data-0-movies-kafka-dual-0`, `-2` / `-1` | `/mnt/data/kafka/<claim>` | worker1 / worker2 |
+| `monitoring/data-prometheus-monitoring-kube-prometheus-prometheus-0` | `/mnt/data/monitoring/<claim>` | worker2 |
+
+Each is a local volume pinned to its worker and to its claim by namespace and name (`claimRef`), with `Retain`: the claim of that name in a new cluster gets the same folder, and its pod is scheduled on that worker. Don't move a volume to another worker once it has data.
+
+**Starting from the data, or from nothing.** Each component already initialises only what's empty: PostgreSQL runs `initdb` only on an empty folder, Flyway applies only the migrations not yet applied, `04-app.yml` loads the movies dump only if the movies table is missing, Keycloak imports the realm only if it doesn't exist, and Ollama downloads only the models it doesn't have. Two more checks in `04-app.yml`:
+
+- **Kafka's cluster ID.** Strimzi gives a new Kafka resource a new cluster ID, and brokers refuse data written under another one. So, on a new cluster, `04-app.yml` reads `cluster.id` from broker 0's `meta.properties` on the data disk. If there is one, it creates the Kafka resource paused (`strimzi.io/pause-reconciliation`), sets that ID in its status, and lets Strimzi start it: Strimzi's procedure for [recovering a cluster from its volumes](https://strimzi.io/docs/operators/latest/deploying#cluster-recovery_str).
+- **The passwords.** If a database already has data but its password (or, for Keycloak's, the service accounts' secrets) is missing from `ansible/.secrets/`, it stops with an error rather than deploy services that can't log in.
+
+**A deployment made before the data disks** (its volumes on the boot disks, through local-path-provisioner) can't switch in place: a StatefulSet's claims can't change storage class. With this version, run `just destroy`, then `just all`: the old data is lost and the new deployment starts empty, but the static IP is kept. `just destroy` only drops it from the VMs' state (`terraform state rm`, before destroying), and `just persistent` imports it. Use `just destroy` rather than a bare `terraform destroy` for that one time: Terraform's destroy would delete the address.
+
+Not kept: Grafana's own settings (its dashboard and data source come from the playbooks), the TLS certificate (self-signed again for the same IP), and Kubernetes itself (etcd), which is rebuilt.
+
 ## Testing persistence
 
-[`evidence/`](evidence/) holds two scripts that show nothing is lost across a stop and start. Run them in the management container, from `infra/`. Their output goes to `evidence/*.txt`, which git ignores.
+[`evidence/`](evidence/) holds two scripts that show nothing is lost across a stop and start, or across destroying every VM and deploying again. Run them in the management container, from `infra/`. Their output goes to `evidence/*.txt`, which git ignores.
 
 ```bash
 just snapshot before       # record the state (see below)
@@ -241,7 +283,17 @@ just snapshot after
 just compare before after  # prints "IDENTICAL: nothing lost", or the lines that differ
 ```
 
-`just snapshot <label>` runs `evidence/snapshot.sh`, which writes `evidence/<label>.txt` with: the recommendation requests by status, the row counts of the profiles database, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics, Ollama's models and the volumes' status. It also writes `<label>-pods.txt`, the pod list, for reference. `just compare` runs `evidence/compare.sh`, which ignores the "N minutes ago" text of the models.
+The stronger test, a whole new cluster on new VMs:
+
+```bash
+just snapshot before
+just destroy               # VMs, boot disks and network gone; data disks and static IP kept
+just all                   # new VMs and cluster; prints "Data disk in use since ..." and Kafka's recovered ID
+just snapshot rebuilt
+just compare before rebuilt
+```
+
+`just snapshot <label>` runs `evidence/snapshot.sh`, which writes `evidence/<label>.txt` with: the recommendation requests by status, the row counts of the profiles database, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics and its consumer groups' offsets, Ollama's models and the volumes' status. It also writes `<label>-pods.txt`, the pod list, for reference. `just compare` runs `evidence/compare.sh`, which ignores the "N minutes ago" text of the models.
 
 **Before the first snapshot, wait until no recommendation request is `PENDING`.** A request in flight when the VMs stop fails by design (see [Stop and start the VMs](#stop-and-start-the-vms)), so the two snapshots would differ for a legitimate reason: a failed profile request is deleted.
 

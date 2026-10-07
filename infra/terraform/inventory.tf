@@ -4,7 +4,7 @@ resource "local_file" "inventory" {
   file_permission = "0644"
   content = templatefile("${path.module}/inventory.ini.tftpl", {
     ssh_user    = var.ssh_user
-    public_host = google_compute_address.edge.address
+    public_host = data.google_compute_address.edge.address
     master = {
       name    = google_compute_instance.master.name
       public  = google_compute_instance.master.network_interface[0].access_config[0].nat_ip

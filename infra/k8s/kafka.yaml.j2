@@ -1,5 +1,6 @@
 # Kafka, run by the Strimzi operator (installed by ansible/playbooks/03-platform.yml): {{ kafka_replicas }} nodes in
-# KRaft mode, each both broker and controller, with persistent storage. Clients connect to
+# KRaft mode, each both broker and controller, with persistent storage (a folder on a worker's data disk,
+# k8s/platform/storage.yaml.j2). Clients connect to
 # movies-kafka-kafka-bootstrap.kafka.svc:9092. Topics are still created on first use, with 6 partitions,
 # as in compose.yaml.
 {% set copies = [kafka_replicas, 3] | min %}
@@ -20,6 +21,7 @@ spec:
       - id: 0
         type: persistent-claim
         size: 5Gi
+        class: {{ storage_class }}
         deleteClaim: false
         kraftMetadata: shared
   # As compose.yaml: the default 1 GB heap is far more than this project's few small messages need.
@@ -35,6 +37,12 @@ kind: Kafka
 metadata:
   name: movies-kafka
   namespace: kafka
+{% if kafka_cluster_id | default('') %}
+  # Created over the data of an earlier deployment (cluster ID {{ kafka_cluster_id }}): paused until
+  # ansible/playbooks/04-app.yml gives it that ID, or Strimzi would pick a new one that the data refuses.
+  annotations:
+    strimzi.io/pause-reconciliation: "true"
+{% endif %}
 spec:
   kafka:
     version: {{ kafka_version }}

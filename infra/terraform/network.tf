@@ -48,9 +48,20 @@ resource "google_compute_firewall" "web" {
   }
 }
 
-# The application's public address, kept when VMs are stopped or recreated: Keycloak's tokens, the
-# login redirects and the TLS certificate all name it.
-resource "google_compute_address" "edge" {
+# The application's public address, kept when VMs are stopped, recreated or destroyed: Keycloak's tokens,
+# the login redirects and the TLS certificate all name it. It belongs to the persistent stack
+# (persistent/main.tf), which `just persistent` applies first; here it is only looked up.
+data "google_compute_address" "edge" {
   name   = "g17-edge"
   region = var.gcp_region
+}
+
+# It used to be created here: on a deployment made before the persistent stack, apply forgets it from this
+# state without deleting it (the persistent stack imports it). destroy ignores this block: `just destroy`
+# forgets it first.
+removed {
+  from = google_compute_address.edge
+  lifecycle {
+    destroy = false
+  }
 }

@@ -2,7 +2,7 @@
 #
 # On your computer:   just mgmt-start, just mgmt, just keygen, just images <registry>, just prometheus, just mgmt-stop
 # Inside mgmt:        just infra, just cluster, just platform, just app (or just all), just stop, just start,
-#                     just snapshot, just compare, just destroy
+#                     just snapshot, just compare, just destroy, just destroy-data
 #
 # Running everything locally, in Docker, is a different set of recipes: see the justfile in the project root.
 
@@ -34,15 +34,43 @@ keygen:
 images registry tag="latest":
     ./build-images.sh {{registry}} {{tag}}
 
-# Create the VMs, network and firewall in GCP, and write ansible/inventory.ini
-infra:
+# Create the data disks and the static address, or reuse the ones a previous deployment left (see destroy)
+persistent:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd terraform/persistent
+    terraform init -upgrade
+    vars=(-var-file=../terraform.tfvars)
+    # Adopt what already exists in the project but not in this folder's state (left by `just destroy`
+    # with a lost state, or created by a teammate): import it, so that apply keeps it instead of failing.
+    adopt() {  # adopt <resource address> <name in GCP>
+        terraform state show "$1" >/dev/null 2>&1 && { echo "$2: already managed here, reusing it"; return; }
+        if out=$(terraform import -input=false "${vars[@]}" "$1" "$2" 2>&1); then
+            echo "$2: found in the project, reusing it (and the data on it)"
+        elif grep -q 'non-existent remote object' <<<"$out"; then
+            echo "$2: not in the project yet, creating it"
+        else
+            echo "$out" >&2; exit 1
+        fi
+    }
+    adopt google_compute_address.edge g17-edge
+    # The workers' names (worker1 worker2...): the last line terraform console prints, after any warning.
+    workers=$(echo 'jsonencode(local.workers)' | terraform console "${vars[@]}" 2>/dev/null | tail -n 1 | grep -o 'worker[0-9]\+' || true)
+    [ -n "$workers" ] || { echo "Couldn't read the number of workers from terraform.tfvars" >&2; exit 1; }
+    for w in $workers; do
+        adopt "google_compute_disk.data[\"$w\"]" "g17-data-$w"
+    done
+    terraform apply "${vars[@]}"
+
+# Create the VMs, network and firewall in GCP, attach the data disks, and write ansible/inventory.ini
+infra: persistent
     cd terraform && terraform init -upgrade && terraform apply
 
 # Install Kubernetes (containerd, kubeadm, Calico) on the VMs
 cluster:
     cd ansible && ansible-playbook playbooks/01-nodes.yml playbooks/02-cluster.yml
 
-# Install the storage provisioner, Strimzi (Kafka operator), Prometheus and Grafana
+# Create the volumes on the data disks, install Strimzi (Kafka operator), Prometheus and Grafana
 platform:
     cd ansible && ansible-playbook playbooks/03-platform.yml
 
@@ -57,7 +85,7 @@ all: infra cluster platform app
 prometheus:
     kubectl --kubeconfig .kube/config -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090
 
-# Stop every VM: the disks (databases, Kafka, models) and the static address stay, and only those are billed
+# Stop every VM: the disks (the data disks hold every volume) and the static address stay, and only those are billed
 stop:
     cd terraform && terraform apply -auto-approve -var vm_state=TERMINATED
 
@@ -106,7 +134,7 @@ start:
     wait_for curl -ksf "$url/"
     echo "Everything answers, $((SECONDS - began)) seconds after the start: $url"
 
-# Record the application's state to evidence/<label>.txt, to compare before and after a stop and start
+# Record the application's state to evidence/<label>.txt, to compare before and after a stop and start, or a destroy and all
 snapshot label:
     ./evidence/snapshot.sh {{label}}
 
@@ -114,6 +142,26 @@ snapshot label:
 compare before after:
     ./evidence/compare.sh {{before}} {{after}}
 
-# Delete every cloud resource (VMs, disks, static IP, network): all data is lost
+# The data disks and the static address stay (and are billed): the next `just all` reattaches them, and
+# the application comes back with all its data.
+#
+# Delete the VMs, their boot disks and the network, keeping the data (see destroy-data)
 destroy:
-    cd terraform && terraform destroy
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd terraform
+    # A deployment made before the persistent stack still has the static address in this state, and
+    # destroy ignores the removed block in network.tf: forget it here (just persistent imports it later).
+    if terraform state list 2>/dev/null | grep -qx google_compute_address.edge; then
+        terraform state rm google_compute_address.edge
+    fi
+    terraform destroy
+
+# Delete the data disks and the static address too: every database, Kafka, the models and Prometheus are lost
+destroy-data:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if terraform -chdir=terraform state list 2>/dev/null | grep -q '^google_compute_instance'; then
+        echo "The VMs still exist and use the disks: run just destroy first." >&2; exit 1
+    fi
+    cd terraform/persistent && terraform init -upgrade >/dev/null && terraform destroy -var-file=../terraform.tfvars

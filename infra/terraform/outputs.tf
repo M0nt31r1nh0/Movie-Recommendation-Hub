@@ -1,6 +1,6 @@
 output "public_url" {
   description = "The application (Grafana at /grafana)."
-  value       = "https://${google_compute_address.edge.address}"
+  value       = "https://${data.google_compute_address.edge.address}"
 }
 
 output "master_ip" {

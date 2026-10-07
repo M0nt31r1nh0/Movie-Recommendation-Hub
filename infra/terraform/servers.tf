@@ -28,6 +28,14 @@ resource "google_compute_instance" "master" {
   }
 }
 
+# Each worker's data disk, from the persistent stack (persistent/main.tf): not created or deleted here, so
+# `terraform destroy` leaves the data on it, and the next apply attaches it to the new VM.
+data "google_compute_disk" "data" {
+  count = var.worker_count
+  name  = "g17-data-worker${count.index + 1}"
+  zone  = var.gcp_zone
+}
+
 # worker1 is the edge node: NGINX runs there (on ports 80 and 443 of the VM) with the static address.
 resource "google_compute_instance" "worker" {
   count        = var.worker_count
@@ -46,10 +54,16 @@ resource "google_compute_instance" "worker" {
     }
   }
 
+  # Seen by the VM as /dev/disk/by-id/google-data, which ansible/playbooks/01-nodes.yml mounts at /mnt/data.
+  attached_disk {
+    source      = data.google_compute_disk.data[count.index].self_link
+    device_name = "data"
+  }
+
   network_interface {
     subnetwork = google_compute_subnetwork.cluster.id
     access_config {
-      nat_ip = count.index == 0 ? google_compute_address.edge.address : null
+      nat_ip = count.index == 0 ? data.google_compute_address.edge.address : null
     }
   }
 

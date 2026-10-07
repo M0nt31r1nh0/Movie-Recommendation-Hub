@@ -1,9 +1,32 @@
 # Cluster-wide pieces the application relies on, installed once:
-#   - local-path-provisioner: the default StorageClass, so PersistentVolumeClaims (databases, Kafka,
-#     Ollama's models, Prometheus) get a folder on the node's disk;
+#   - the volumes (k8s/platform/storage.yaml.j2): one folder per PersistentVolumeClaim (databases, Kafka,
+#     Ollama's models, Prometheus) on a worker's data disk, which outlives the VMs;
 #   - Strimzi: the operator that runs Kafka from a Kafka resource (k8s/kafka.yaml.j2);
 #   - kube-prometheus-stack: Prometheus, Grafana, node-exporter and kube-state-metrics, plus the
 #     ServiceMonitor/PodMonitor resources the application uses to say what to scrape.
+- name: Create the volumes' folders on the data disks
+  hosts: workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check that every volume is on an existing worker
+      ansible.builtin.assert:
+        that: persistent_volumes | map(attribute='node') | difference(groups['workers']) | length == 0
+        fail_msg: "persistent_volumes names a node that isn't a worker ({{ groups['workers'] | join(', ') }})."
+      run_once: true
+
+    # Open to every user, as local-path-provisioner made them: PostgreSQL, Kafka and Prometheus run as
+    # different users, and each one makes its own subfolder with its own permissions. A folder that is
+    # already there keeps what's in it.
+    - name: Create {{ data_dir }}/<namespace>/<claim> for this worker's volumes
+      ansible.builtin.file:
+        path: "{{ data_dir }}/{{ item.namespace }}/{{ item.claim }}"
+        state: directory
+        mode: "0777"
+      loop: "{{ persistent_volumes | selectattr('node', 'eq', inventory_hostname) }}"
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.claim }}"
+
 - name: Install the platform
   hosts: controlplane
   vars:
@@ -30,14 +53,15 @@
         state: directory
         mode: "0755"
 
-    - name: Install local-path-provisioner
-      ansible.builtin.command: >
-        kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ local_path_provisioner_version }}/deploy/local-path-storage.yaml
+    - name: Write the volumes
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../k8s/platform/storage.yaml.j2"
+        dest: "{{ workdir }}/storage.yaml"
+        mode: "0600"
 
-    - name: Make it the default StorageClass
-      ansible.builtin.command: >
-        kubectl patch storageclass local-path
-        -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "true"}}}'
+    # Before anything that claims one: each claim waits for its volume.
+    - name: Create the StorageClass and the volumes
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/storage.yaml
 
     - name: Install Strimzi (watches the kafka namespace)
       ansible.builtin.command: >

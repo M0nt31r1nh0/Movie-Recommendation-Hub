@@ -1,0 +1,41 @@
+# Where every volume lives: a folder on a worker's data disk ({{ data_dir }}, a GCE disk that `just destroy`
+# keeps), declared here once per claim (persistent_volumes in ansible/group_vars/all.yml).
+#   - No provisioner: nothing creates or deletes volumes on demand. Each PersistentVolume names the one
+#     claim it belongs to (claimRef), so a new cluster's claim of that name gets the same folder, and its
+#     data, back.
+#   - Retain: deleting a claim never deletes the folder.
+#   - Local volumes, pinned to their worker: the pod that uses one is scheduled there.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ storage_class }}
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+{% for v in persistent_volumes %}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ v.namespace }}-{{ v.claim }}
+  labels:
+    movies/volume: "true"
+spec:
+  capacity:
+    storage: {{ v.size }}
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ storage_class }}
+  claimRef:
+    namespace: {{ v.namespace }}
+    name: {{ v.claim }}
+  local:
+    path: {{ data_dir }}/{{ v.namespace }}/{{ v.claim }}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [{{ v.node }}]
+{% endfor %}

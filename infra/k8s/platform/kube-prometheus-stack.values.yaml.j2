@@ -27,10 +27,15 @@ prometheus:
     resources:
       requests: { cpu: 200m, memory: 512Mi }
       limits: { memory: 1536Mi }
+    # Its claim is data-prometheus-monitoring-kube-prometheus-prometheus-0, which has a volume on a
+    # worker's data disk (persistent_volumes in ansible/group_vars/all.yml).
     storageSpec:
       volumeClaimTemplate:
+        metadata:
+          name: data
         spec:
           accessModes: [ReadWriteOnce]
+          storageClassName: {{ storage_class }}
           resources:
             requests:
               storage: 10Gi

@@ -4,6 +4,9 @@ ssh/
 terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.*
+terraform/persistent/.terraform/
+terraform/persistent/*.tfstate
+terraform/persistent/*.tfstate.*
 terraform/terraform.tfvars
 terraform/*.json
 ansible/inventory.ini

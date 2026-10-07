@@ -8,6 +8,7 @@ metadata:
   namespace: movies
 spec:
   accessModes: [ReadWriteOnce]
+  storageClassName: {{ storage_class }}
   resources:
     requests:
       storage: 15Gi

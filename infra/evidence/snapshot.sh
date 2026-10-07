@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Records the application's state, to compare before and after stopping and starting the VMs:
+# Records the application's state, to compare before and after stopping and starting the VMs, or destroying
+# them and deploying again on the same data disks:
 #   evidence/snapshot.sh <label>      (or: just snapshot <label>)
 # Writes evidence/<label>.txt (what must survive) and evidence/<label>-pods.txt (the pods, for reference).
 # Run it in the management container, where kubectl points at the cluster. See evidence/README.md.
@@ -38,6 +39,13 @@ sql() {
 
   echo "== kafka topics"
   kubectl -n kafka exec movies-kafka-dual-0 -- bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+
+  # Without the groups named after a random UUID (one per recommendation-service instance, for the
+  # broadcast topic recommendation.ready): a new instance has a new one, by design.
+  echo "== kafka consumer groups: where each one is in each partition"
+  kubectl -n kafka exec movies-kafka-dual-0 -- bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+    --describe --all-groups 2>/dev/null | awk 'NF && $1 != "GROUP" {print $1, $2, $3, $4, $5}' \
+    | grep -v -E -- '-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-' | sort
 
   echo "== ollama models"
   kubectl -n movies exec deploy/ollama -- ollama list

@@ -3,6 +3,9 @@
 #   databases (+ the movies dump, first time only) -> Kafka -> Ollama (+ models) -> Keycloak
 #   -> the four services and the frontend -> NGINX -> what Prometheus scrapes, and Grafana's dashboard.
 # Running it again only changes what changed (and, with image_tag latest, pulls the images again).
+# On a new cluster whose data disks already hold data (after `just destroy` and `just all`), everything
+# starts from that data: PostgreSQL, Keycloak and the movies' import only initialise what's empty, and
+# Kafka is given back the cluster ID its data was written with.
 - name: Deploy the application
   hosts: controlplane
   vars:
@@ -14,6 +17,8 @@
     deploy_timestamp: "{{ now(utc=true).isoformat() }}"
     nginx_config_hash: "{{ (lookup('ansible.builtin.file', k8s_src + '/nginx.yaml.j2') + public_url) | hash('sha1') }}"
     apps: [movies-service, profiles-service, recommendation-service, recommendation-worker, frontend]
+    # The worker whose data disk holds a claim's volume: volume_node['data-movies-db-0'] -> worker1
+    volume_node: "{{ persistent_volumes | items2dict(key_name='claim', value_name='node') }}"
 
   tasks:
     - name: Check that the images' registry is set
@@ -26,6 +31,73 @@
         path: "{{ workdir }}"
         state: directory
         mode: "0700"
+
+    # --- Data from an earlier deployment -----------------------------------------------------------
+    # A database on the data disk keeps the passwords it was created with, and Keycloak's keeps the
+    # services' client secrets: with a new password from a lost .secrets folder, nothing could log in.
+    - name: Look for databases already on the data disks
+      become: true
+      delegate_to: "{{ volume_node['data-' + item.name + '-0'] }}"
+      ansible.builtin.stat:
+        path: "{{ data_dir }}/movies/data-{{ item.name }}-0/pgdata/PG_VERSION"
+      loop: "{{ databases }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: existing_databases
+
+    - name: List the secrets they were created with
+      vars:
+        existing: "{{ existing_databases.results | selectattr('stat.exists') | map(attribute='item.name') | list }}"
+      ansible.builtin.set_fact:
+        databases_with_data: "{{ existing }}"
+        required_secrets: >-
+          {{ existing + (['keycloak-admin', 'recommendation-service', 'recommendation-worker']
+                         if 'keycloak-db' in existing else []) }}
+
+    - name: Look for them in {{ secrets_dir }}
+      delegate_to: localhost
+      ansible.builtin.stat:
+        path: "{{ secrets_dir }}/{{ item }}"
+      loop: "{{ required_secrets }}"
+      register: secret_files
+
+    - name: Check that none is missing
+      ansible.builtin.assert:
+        that: missing | length == 0
+        fail_msg: >-
+          The data disks hold databases created with passwords that are no longer in {{ secrets_dir }}:
+          {{ missing | join(', ') }}. Put back that folder from the deployment that created them, or delete
+          the data (just destroy, then just destroy-data) to start from nothing.
+        success_msg: "Databases with data from an earlier deployment: {{ databases_with_data | join(', ') or 'none' }}"
+      vars:
+        missing: "{{ secret_files.results | rejectattr('stat.exists') | map(attribute='item') | list }}"
+
+    # A new Kafka resource gets a new cluster ID from Strimzi, and the brokers refuse data written under
+    # another one. So, until the Kafka resource has an ID (a new cluster, or a run that stopped halfway
+    # through the recovery below), read the ID the data was written with.
+    - name: Read the Kafka resource's cluster ID, if it exists and has one
+      ansible.builtin.command: kubectl -n kafka get kafka movies-kafka --ignore-not-found -o jsonpath={.status.clusterId}
+      register: kafka_resource
+      changed_when: false
+
+    - name: If not, read the cluster ID of the Kafka data on the disk, if there is any
+      when: kafka_resource.stdout | length == 0
+      become: true
+      delegate_to: "{{ volume_node['data-0-movies-kafka-dual-0'] }}"
+      ansible.builtin.shell: cat {{ data_dir }}/kafka/data-0-movies-kafka-dual-0/kafka-log*/meta.properties
+      register: kafka_meta
+      changed_when: false
+      failed_when: false
+
+    - name: Keep it, to give it back to the new Kafka resource
+      ansible.builtin.set_fact:
+        kafka_cluster_id: "{{ kafka_meta.stdout | default('') | regex_findall('cluster\\.id=(\\S+)') | first | default('') }}"
+
+    - name: Kafka
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Kafka data from an earlier deployment, cluster ID ' + kafka_cluster_id if kafka_cluster_id
+             else 'Kafka already running here, or starting with no data' }}
 
     - name: Render the manifests
       ansible.builtin.template:
@@ -104,6 +176,32 @@
     # --- Kafka -------------------------------------------------------------------------------------
     - name: Create the Kafka cluster
       ansible.builtin.command: kubectl apply -f {{ workdir }}/kafka.yaml
+
+    # Strimzi's procedure for a cluster recovered from its volumes: the Kafka resource was created paused
+    # (kafka.yaml.j2), so Strimzi hasn't picked an ID; set the old one in its status, then let it start.
+    - name: Give it back the cluster ID of its data
+      when: kafka_cluster_id | length > 0
+      block:
+        # (A resource that existed unpaused, from a run that stopped halfway, is paused by the apply above.)
+        # Not `kubectl wait --for=condition`: a paused resource's status keeps observedGeneration 0, so
+        # kubectl takes the condition for an old one and never sees it.
+        - name: Wait until Strimzi has seen it paused
+          ansible.builtin.command: >
+            kubectl -n kafka get kafka movies-kafka
+            -o jsonpath='{.status.conditions[?(@.type=="ReconciliationPaused")].status}'
+          register: kafka_paused
+          until: kafka_paused.stdout == 'True'
+          retries: 60
+          delay: 5
+          changed_when: false
+
+        - name: Set the cluster ID in its status
+          ansible.builtin.command: >
+            kubectl -n kafka patch kafka movies-kafka --subresource status --type merge
+            -p '{"status": {"clusterId": "{{ kafka_cluster_id }}"}}'
+
+        - name: Let Strimzi start it
+          ansible.builtin.command: kubectl -n kafka annotate kafka movies-kafka strimzi.io/pause-reconciliation=false --overwrite
 
     - name: Wait until Strimzi says it's ready
       ansible.builtin.command: kubectl -n kafka wait kafka/movies-kafka --for=condition=Ready --timeout=15m

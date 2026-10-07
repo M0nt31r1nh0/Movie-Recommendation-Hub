@@ -1,4 +1,6 @@
-# Copy to terraform.tfvars (not committed) and fill in.
+# Copy to terraform.tfvars (not committed) and fill in. Both stacks read it: this folder's (the VMs) and
+# persistent/ (the data disks and the static address). A setting only one of them uses makes the other
+# warn about an undeclared variable: that's harmless.
 gcp_project_id       = "psia26-g17-XXXXXX"
 gcp_credentials_file = "credentials.json"
 
@@ -6,3 +8,4 @@ gcp_credentials_file = "credentials.json"
 # worker_count        = 2
 # worker_machine_type = "e2-standard-4"
 # admin_cidrs         = ["203.0.113.7/32"]
+# data_disk_size_gb   = 40   # persistent/ only

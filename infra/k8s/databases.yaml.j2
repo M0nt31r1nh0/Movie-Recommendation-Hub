@@ -1,5 +1,6 @@
 # One PostgreSQL per service (group_vars/all.yml: databases), each with:
-#   - a PersistentVolumeClaim, so the data outlives the pod;
+#   - a PersistentVolumeClaim, so the data outlives the pod, and the cluster: its volume is a folder on a
+#     worker's data disk (k8s/platform/storage.yaml.j2);
 #   - a postgres_exporter sidecar, whose metrics (port 9187) Prometheus scrapes;
 #   - a NetworkPolicy: only the owning service's pods may connect on 5432, and only the monitoring
 #     namespace on 9187. "A database is accessed by a single microservice", enforced by the network.
@@ -87,6 +88,7 @@ spec:
         name: data
       spec:
         accessModes: [ReadWriteOnce]
+        storageClassName: {{ storage_class }}
         resources:
           requests:
             storage: {{ db.size }}

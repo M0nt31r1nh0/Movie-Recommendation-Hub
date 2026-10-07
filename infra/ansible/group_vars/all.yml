@@ -6,7 +6,6 @@
 kubernetes_version: "1.35"
 calico_version: v3.32.2
 helm_version: v4.3.0
-local_path_provisioner_version: v0.0.37
 strimzi_version: 1.2.0
 kafka_version: 4.3.1
 kube_prometheus_stack_version: 91.8.2
@@ -43,9 +42,32 @@ ollama_embedding_model: nomic-embed-text
 # Brokers (each also a KRaft controller). With 3, topics keep 3 copies and survive one broker down.
 kafka_replicas: 3
 
+# --- Persistent volumes ---------------------------------------------------------------------------
+# Every volume is a folder on a worker's data disk (Terraform's persistent stack), which survives
+# `just destroy`: a new cluster finds the same folders, so the databases, Kafka, the models and Prometheus
+# start from the data already there, or empty the first time. Each one is a PersistentVolume pinned to its
+# claim (by namespace and name) and to its worker, so its pod always runs there.
+# Don't move a volume to another worker once it has data: its pod would start there, empty.
+data_dir: /mnt/data
+storage_class: persistent
+persistent_volumes:
+  # size: what the claim requests (a local volume doesn't enforce it; the disk's size does).
+  - { namespace: movies,     claim: data-movies-db-0,           size: 10Gi, node: worker1 }
+  - { namespace: movies,     claim: data-profiles-db-0,         size: 2Gi,  node: worker1 }
+  - { namespace: movies,     claim: data-recommendations-db-0,  size: 2Gi,  node: worker1 }
+  - { namespace: movies,     claim: data-keycloak-db-0,         size: 2Gi,  node: worker1 }
+  - { namespace: movies,     claim: ollama-models,              size: 15Gi, node: worker2 }
+  # One per Kafka broker (kafka_replicas), named data-<volume>-<cluster>-<pool>-<broker> by Strimzi.
+  - { namespace: kafka,      claim: data-0-movies-kafka-dual-0, size: 5Gi,  node: worker1 }
+  - { namespace: kafka,      claim: data-0-movies-kafka-dual-1, size: 5Gi,  node: worker2 }
+  - { namespace: kafka,      claim: data-0-movies-kafka-dual-2, size: 5Gi,  node: worker1 }
+  # kube-prometheus-stack's (storageSpec in k8s/platform/kube-prometheus-stack.values.yaml.j2).
+  - { namespace: monitoring, claim: data-prometheus-monitoring-kube-prometheus-prometheus-0, size: 10Gi, node: worker2 }
+
 # --- Secrets --------------------------------------------------------------------------------------
 # Generated on the first run into ansible/.secrets/ (not committed) and reused afterwards: that folder
-# is where to read the Keycloak and Grafana admin passwords.
+# is where to read the Keycloak and Grafana admin passwords. The databases on the data disks were created
+# with these passwords, so keep the folder as long as the data disks: 04-app.yml stops if one is missing.
 secrets_dir: "{{ inventory_dir }}/.secrets"
 secret_chars: [ascii_letters, digits]
 keycloak_admin_password: "{{ lookup('ansible.builtin.password', secrets_dir + '/keycloak-admin', length=20, chars=secret_chars) }}"
