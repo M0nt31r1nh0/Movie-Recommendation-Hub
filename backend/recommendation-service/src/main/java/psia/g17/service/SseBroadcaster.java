@@ -1,7 +1,10 @@
 package psia.g17.service;
 
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
+import io.quarkus.runtime.Startup;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.sse.OutboundSseEvent;
@@ -14,7 +17,12 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** The open SSE connections on this copy of the service, by user. */
+/**
+ * The open SSE connections on this copy of the service, by user. Their number is
+ * {@code recommendation_sse_connections}: about how many users have the app open.
+ */
+// Created at startup, so its metrics are published from the first scrape (beans are otherwise created on first use).
+@Startup
 @ApplicationScoped
 public class SseBroadcaster {
 
@@ -25,6 +33,12 @@ public class SseBroadcaster {
     }
 
     private final Map<UUID, Set<Connection>> connections = new ConcurrentHashMap<>();
+
+    public SseBroadcaster(MeterRegistry metrics) {
+        Gauge.builder("recommendation.sse.connections", connections, c -> c.values().stream().mapToInt(Set::size).sum())
+                .description("Open server-sent event connections: browsers with the app open")
+                .register(metrics);
+    }
 
     public void register(UUID userId, SseEventSink sink, Sse sse) {
         Connection connection = new Connection(sink, sse);

@@ -12,6 +12,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 import psia.g17.client.OllamaClient;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -82,6 +83,8 @@ public class Llm {
                 .tag("model", model)
                 .tag("outcome", outcome)
                 .publishPercentileHistogram()
+                // Answers take minutes on a CPU: without this, the histogram stops at Micrometer's default 30 s.
+                .maximumExpectedValue(Duration.ofMinutes(30))
                 .register(metrics);
     }
 

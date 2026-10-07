@@ -1,5 +1,7 @@
 package psia.g17.service;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.quarkus.logging.Log;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.panache.common.Sort;
@@ -14,6 +16,7 @@ import psia.g17.events.ReadyEvent;
 import psia.g17.events.RecommendationResult;
 import psia.g17.events.Status;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -27,7 +30,9 @@ import java.util.UUID;
  *   <li>Typed requests: each user keeps their last {@value #PROMPT_HISTORY} answers. A failure stays for
  *       an hour, outside the history, so a returning user can be told (see PendingSweeper).</li>
  * </ul>
- * Every outcome is announced on recommendation.ready, which reaches the user's open SSE connections.
+ * Every outcome is announced on recommendation.ready, which reaches the user's open SSE connections,
+ * and timed from the request in {@code recommendation_turnaround_seconds}, by {@code kind} and
+ * {@code status}: done, failed, or timed_out (given up on, see PendingSweeper).
  */
 @ApplicationScoped
 public class RecommendationStore {
@@ -35,9 +40,11 @@ public class RecommendationStore {
     public static final int PROMPT_HISTORY = 5;
 
     private final Emitter<ReadyEvent> ready;
+    private final MeterRegistry metrics;
 
-    public RecommendationStore(@Channel("recommendation-ready") Emitter<ReadyEvent> ready) {
+    public RecommendationStore(@Channel("recommendation-ready") Emitter<ReadyEvent> ready, MeterRegistry metrics) {
         this.ready = ready;
+        this.metrics = metrics;
     }
 
     /** Applies a worker's result. Receiving it twice, or for a request that was given up on, changes nothing. */
@@ -52,6 +59,7 @@ public class RecommendationStore {
             r.recipe = result.recipe();
             r.durationMs = result.durationMs();
             if (result.status() != Status.DONE) {
+                turnaround(r, "failed");
                 return failed(r, result.error());
             }
             r.status = RecommendationRequest.Status.DONE;
@@ -59,6 +67,7 @@ public class RecommendationStore {
             r.movieIds.clear();
             if (result.movieIds() != null) r.movieIds.addAll(result.movieIds());
             succeeded(r);
+            turnaround(r, "done");
             Log.infof("Request %s DONE in %d ms", r.id, r.durationMs);
             return new ReadyEvent(r.id, r.userId, r.kind, Status.DONE, null);
         }));
@@ -68,7 +77,9 @@ public class RecommendationStore {
     public void fail(UUID requestId, String error) {
         announce(QuarkusTransaction.requiringNew().call(() -> {
             RecommendationRequest r = RecommendationRequest.findById(requestId);
-            return r == null || r.status != RecommendationRequest.Status.PENDING ? null : failed(r, error);
+            if (r == null || r.status != RecommendationRequest.Status.PENDING) return null;
+            turnaround(r, "timed_out");
+            return failed(r, error);
         }));
     }
 
@@ -152,6 +163,18 @@ public class RecommendationStore {
         }
         Log.infof("Request %s FAILED: %s", r.id, message);
         return new ReadyEvent(r.id, r.userId, r.kind, Status.FAILED, message);
+    }
+
+    /** How long the user waited, from the request to its outcome. */
+    private void turnaround(RecommendationRequest r, String status) {
+        Timer.builder("recommendation.turnaround")
+                .description("Time from a recommendation request to its answer, by kind and status")
+                .tag("kind", r.kind.name().toLowerCase())
+                .tag("status", status)
+                .publishPercentileHistogram()
+                .maximumExpectedValue(Duration.ofHours(1))
+                .register(metrics)
+                .record(Duration.between(r.createdAt, Instant.now()));
     }
 
     private static void recordFailure(ProfileState state, String error) {

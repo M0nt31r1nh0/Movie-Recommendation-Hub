@@ -1,5 +1,7 @@
 package psia.g17.resource;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
@@ -52,6 +54,10 @@ import java.util.function.Function;
  * Keycloak access token. Anyone logged in can read any profile, except its watchlist, which only its
  * owner sees; changes go through {@code /profiles/me/...}, so users only ever change their own. Wherever
  * a path takes a profile id, {@code me} means the logged-in user.
+ *
+ * <p>Each change is counted in {@code profiles_actions_total}, by {@code action}: favorite_genres_set,
+ * watched_added, watched_removed, watchlist_added, watchlist_removed, followed, unfollowed. A removal that
+ * removed nothing isn't counted.
  */
 @Path("/profiles")
 @Produces(MediaType.APPLICATION_JSON)
@@ -61,11 +67,13 @@ public class ProfileResource {
     private final CurrentUser currentUser;
     private final MovieCatalog catalog;
     private final EntityManager em;
+    private final MeterRegistry metrics;
 
-    public ProfileResource(CurrentUser currentUser, MovieCatalog catalog, EntityManager em) {
+    public ProfileResource(CurrentUser currentUser, MovieCatalog catalog, EntityManager em, MeterRegistry metrics) {
         this.currentUser = currentUser;
         this.catalog = catalog;
         this.em = em;
+        this.metrics = metrics;
     }
 
     /** Profiles whose username starts with {@code q} (any case), or all of them, by username. */
@@ -104,6 +112,7 @@ public class ProfileResource {
         me.favoriteGenreIds.clear();
         me.favoriteGenreIds.addAll(wanted);
         touch(me.id);
+        counted("favorite_genres_set");
         return view(me);
     }
 
@@ -142,6 +151,7 @@ public class ProfileResource {
         addMovie("watched_movie", me, movieId);
         WatchlistEntry.delete("id.profileId = ?1 and id.movieId = ?2", me, movieId);
         touch(me);
+        counted("watched_added");
     }
 
     @DELETE
@@ -150,6 +160,7 @@ public class ProfileResource {
     public void unmarkWatched(@PathParam("movieId") int movieId) {
         if (WatchedMovie.delete("id.profileId = ?1 and id.movieId = ?2", currentUser.profileId(), movieId) > 0) {
             touch(currentUser.profileId());
+            counted("watched_removed");
         }
     }
 
@@ -181,6 +192,7 @@ public class ProfileResource {
     public void addToWatchlist(@PathParam("movieId") int movieId) {
         addMovie("watchlist", currentUser.profileId(), movieId);
         touch(currentUser.profileId());
+        counted("watchlist_added");
     }
 
     @DELETE
@@ -189,6 +201,7 @@ public class ProfileResource {
     public void removeFromWatchlist(@PathParam("movieId") int movieId) {
         if (WatchlistEntry.delete("id.profileId = ?1 and id.movieId = ?2", currentUser.profileId(), movieId) > 0) {
             touch(currentUser.profileId());
+            counted("watchlist_removed");
         }
     }
 
@@ -229,6 +242,7 @@ public class ProfileResource {
                 .setParameter("other", other)
                 .executeUpdate();
         touch(me);
+        counted("followed");
     }
 
     @DELETE
@@ -237,7 +251,16 @@ public class ProfileResource {
     public void unfollow(@PathParam("id") String id) {
         if (Follow.delete("id.followerId = ?1 and id.followedId = ?2", currentUser.profileId(), findProfile(id).id) > 0) {
             touch(currentUser.profileId());
+            counted("unfollowed");
         }
+    }
+
+    private void counted(String action) {
+        Counter.builder("profiles.actions")
+                .description("Changes users made to their profiles, by action")
+                .tag("action", action)
+                .register(metrics)
+                .increment();
     }
 
     /** Records that a profile's recommendation inputs changed, for recommendation-service's background agent. */

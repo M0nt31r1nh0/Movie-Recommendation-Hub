@@ -698,12 +698,35 @@ Each backend service keeps its Java code in `src/main/java/psia/g17/`, split int
 | `messaging` | Kafka consumers |
 | `scheduler` | Scheduled jobs: the background agent, and the sweeper that fails requests stuck pending |
 | `security` | Who the logged-in user is |
+| `metrics` | Totals counted on a schedule for Prometheus (most metrics are recorded where they happen) |
 | `openapi` | Swagger UI's Keycloak login |
 | `health` | Health checks |
 
 A service only has the packages it needs. Tests mirror the same packages under `src/test/java/psia/g17/`.
 
-Each service also exposes Prometheus metrics at `/q/metrics` (Micrometer): HTTP requests per endpoint, the JVM, the database pool and the Kafka clients. The worker adds `recommendation_llm_requests_seconds` and `recommendation_llm_tokens_total`, measured from Ollama's answers, since Ollama has no metrics of its own.
+Each service exposes Prometheus metrics at `/q/metrics` (Micrometer). Besides the ones Micrometer and Quarkus give for free (HTTP requests per endpoint, the JVM, the database pool, the Kafka clients), each service records **its own application metrics**, which the Grafana dashboard is built on:
+
+| Service | Metric | Type | Labels | What it says |
+|---|---|---|---|---|
+| movies-service | `movies_searches_seconds` | timer | `results` (none, some), `similar_titles` | Searches, how long they took, how many found nothing |
+| movies-service | `movies_candidates_seconds` | timer | `ranking` (meaning, words, taste) | The worker's candidate queries, and whether search by meaning was available |
+| movies-service | `movies_embeddings_requests_seconds` | timer | `purpose` (query, backfill), `outcome` | Each embedding call to Ollama |
+| movies-service | `movies_embeddings_query_cache_total` | counter | `result` (hit, miss) | Ask AI requests whose vector was already known |
+| movies-service | `movies_embeddings_backfilled_total` | counter | | Movies embedded by the background job |
+| movies-service | `movies_embeddings_missing` | gauge | | Movies still to embed (counted each minute) |
+| profiles-service | `profiles_actions_total` | counter | `action` (watched_added, watched_removed, watchlist_added, watchlist_removed, followed, unfollowed, favorite_genres_set) | What users change in their profiles |
+| profiles-service | `profiles_stored` | gauge | `what` (profiles, follows, watched_movies, watchlist_entries, favorite_genres) | What the database holds (counted every 30 s) |
+| recommendation-service | `recommendation_requests_total` | counter | `kind` (profile, prompt), `outcome` (queued, reused, repeated, already_pending, rejected, unavailable) | Demand, and how often an answer needs no model (reused, repeated) |
+| recommendation-service | `recommendation_turnaround_seconds` | timer | `kind`, `status` (done, failed, timed_out) | How long users wait, from the request to its answer |
+| recommendation-service | `recommendation_pending` | gauge | `kind` | Requests waiting for an answer (counted every 30 s) |
+| recommendation-service | `recommendation_sse_connections` | gauge | | Open live connections: about the users with the app open |
+| recommendation-service | `recommendation_agent_queued_total` | counter | | Profile sets the background agent prepared |
+| recommendation-worker | `recommendation_jobs_seconds` | timer | `kind`, `status` (done, failed) | The worker's time per job |
+| recommendation-worker | `recommendation_jobs_waited_seconds` | timer | `kind` | How long a job waited before the worker took it (in Kafka, behind others) |
+| recommendation-worker | `recommendation_llm_requests_seconds` | timer | `model`, `outcome` | Each answer from Ollama, which has no metrics of its own |
+| recommendation-worker | `recommendation_llm_tokens_total` | counter | `model`, `type` (prompt, output) | Tokens Ollama read and wrote |
+
+A timer gives `_count`, `_sum`, `_max` and `_bucket` (a histogram, for percentiles). The long ones (Ollama, jobs, turnaround) have buckets up to 30 minutes or an hour: Micrometer's default stops at 30 seconds, which a CPU-bound model call easily exceeds. Totals that need the database (`*_stored`, `*_pending`, `*_missing`) are counted on a schedule, so a scrape never waits on a query.
 
 The deployment lives next to the code:
 

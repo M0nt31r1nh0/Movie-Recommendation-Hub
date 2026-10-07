@@ -1,5 +1,7 @@
 package psia.g17.messaging;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.common.WithTestResource;
 import io.quarkus.test.junit.QuarkusTest;
@@ -28,6 +30,8 @@ import java.util.concurrent.TimeoutException;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
@@ -41,6 +45,9 @@ class RecommendationWorkerTest {
 
     @InjectMock
     RecommendationPipeline pipeline;
+
+    @Inject
+    MeterRegistry metrics;
 
     private InMemorySink<Record<String, RecommendationResult>> results;
 
@@ -78,6 +85,22 @@ class RecommendationWorkerTest {
         assertEquals(Status.FAILED, result.status());
         assertEquals("No candidate movies matched", result.error());
         assertEquals(List.of(), result.movieIds());
+    }
+
+    @Test
+    void timesEachJobAndHowLongItWaited() {
+        when(pipeline.recommend(any())).thenReturn(List.of(238));
+        RecommendationJob job = new RecommendationJob(UUID.randomUUID(), UUID.randomUUID(), Kind.PROMPT, "space",
+                new ProfileSnapshot("carol", List.of(), List.of(), List.of(), List.of()), Instant.now().minusSeconds(90));
+
+        connector.source("recommendation-requests").send(job);
+        awaitResult(job);
+
+        Timer jobs = metrics.find("recommendation.jobs").tags("kind", "prompt", "status", "done").timer();
+        assertNotNull(jobs, "recommendation_jobs_seconds{kind=prompt,status=done}");
+        Timer waited = metrics.find("recommendation.jobs.waited").tags("kind", "prompt").timer();
+        assertNotNull(waited, "recommendation_jobs_waited_seconds{kind=prompt}");
+        assertTrue(waited.max(java.util.concurrent.TimeUnit.SECONDS) >= 90, "it was requested 90 s before the worker took it");
     }
 
     @Test

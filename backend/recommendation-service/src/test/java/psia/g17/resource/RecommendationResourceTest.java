@@ -18,6 +18,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import psia.g17.InMemoryKafka;
 import psia.g17.TestSupport;
+import psia.g17.metrics.PendingRequests;
 import psia.g17.client.MoviesClient;
 import psia.g17.client.ProfilesClient;
 import psia.g17.dto.PromptRequest;
@@ -33,7 +34,9 @@ import java.util.List;
 import java.util.UUID;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.everyItem;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasKey;
@@ -68,6 +71,9 @@ class RecommendationResourceTest {
     @Inject
     @Any
     InMemoryConnector connector;
+
+    @Inject
+    PendingRequests pending;
 
     @BeforeEach
     void setUp() {
@@ -247,6 +253,29 @@ class RecommendationResourceTest {
     }
 
     @Test
+    @TestSecurity(user = "u14")
+    @OidcSecurity(claims = @Claim(key = "sub", value = U14))
+    void countsRequestsAndTimesTheirAnswers() {
+        UUID id = askAndGetId("a quiet film about the sea");
+        ask("another one while it's prepared").statusCode(409);
+        pending.count();
+        assertThat(metrics(), containsString("recommendation_pending{kind=\"prompt\"}"));
+        answer(done(id, U14, Kind.PROMPT, 238));
+        ask("a quiet film about the sea").statusCode(200);
+
+        String metrics = metrics();
+        assertThat(metrics, containsString("recommendation_requests_total{kind=\"prompt\",outcome=\"queued\"}"));
+        assertThat(metrics, containsString("recommendation_requests_total{kind=\"prompt\",outcome=\"rejected\"}"));
+        assertThat(metrics, containsString("recommendation_requests_total{kind=\"prompt\",outcome=\"repeated\"}"));
+        assertThat(metrics, containsString("recommendation_turnaround_seconds_count{kind=\"prompt\",status=\"done\"}"));
+        assertThat(metrics, containsString("recommendation_sse_connections "));
+    }
+
+    private static String metrics() {
+        return given().when().get("/q/metrics").then().statusCode(200).extract().asString();
+    }
+
+    @Test
     void rejectsRequestsWithoutAToken() {
         given().when().get("/recommendations/me").then().statusCode(401);
         given().when().get("/recommendations/events").then().statusCode(401);
@@ -265,6 +294,7 @@ class RecommendationResourceTest {
     static final String U11 = "a0000000-0000-0000-0000-000000000011";
     static final String U12 = "a0000000-0000-0000-0000-000000000012";
     static final String U13 = "a0000000-0000-0000-0000-000000000013";
+    static final String U14 = "a0000000-0000-0000-0000-000000000014";
 
     private UUID askAndGetId(String prompt) {
         return UUID.fromString(ask(prompt).statusCode(202).extract().path("id"));

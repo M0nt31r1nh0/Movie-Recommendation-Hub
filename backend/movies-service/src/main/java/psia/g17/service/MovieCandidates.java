@@ -1,5 +1,7 @@
 package psia.g17.service;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
@@ -25,6 +27,9 @@ import java.util.stream.Collectors;
  *       {@value #TEXT_WITH_MEANING}, as a tie-breaker for exact titles and names);</li>
  *   <li>0.2 for each person the user follows who watched them, counting at most 3.</li>
  * </ul>
+ * Each query is timed in {@code movies_candidates_seconds}, by {@code ranking}: {@code meaning} (a request
+ * in plain words, embedded), {@code words} (its words only: no request text to embed, or Ollama couldn't
+ * embed it) or {@code taste} (no request text: the profile's genres, friends and ratings).
  */
 @ApplicationScoped
 public class MovieCandidates {
@@ -46,14 +51,17 @@ public class MovieCandidates {
 
     private final EntityManager em;
     private final MovieEmbeddings embeddings;
+    private final MeterRegistry metrics;
 
-    public MovieCandidates(EntityManager em, MovieEmbeddings embeddings) {
+    public MovieCandidates(EntityManager em, MovieEmbeddings embeddings, MeterRegistry metrics) {
         this.em = em;
         this.embeddings = embeddings;
+        this.metrics = metrics;
     }
 
     @SuppressWarnings("unchecked")
     public List<Movie> find(CandidateQuery q) {
+        Timer.Sample sample = Timer.start(metrics);
         List<String> where = new ArrayList<>();
         List<String> score = new ArrayList<>(List.of(QUALITY));
         Map<String, Object> params = new LinkedHashMap<>();
@@ -119,6 +127,13 @@ public class MovieCandidates {
         Query query = em.createNativeQuery(sql, Movie.class)
                 .setMaxResults(q.limit() != null ? q.limit() : CandidateQuery.DEFAULT_LIMIT);
         params.forEach(query::setParameter);
-        return query.getResultList();
+        List<Movie> found = query.getResultList();
+        String ranking = meaning.isPresent() ? "meaning" : q.text() != null && !q.text().isBlank() ? "words" : "taste";
+        sample.stop(Timer.builder("movies.candidates")
+                .description("Candidate queries from recommendation-worker, by how they were ranked")
+                .tag("ranking", ranking)
+                .publishPercentileHistogram()
+                .register(metrics));
+        return found;
     }
 }

@@ -1,5 +1,7 @@
 package psia.g17.service;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.EntityManager;
 import psia.g17.dto.PageResponse;
@@ -23,6 +25,9 @@ import java.util.regex.Pattern;
  * </ol>
  * By relevance, results come in that order: title matches by popularity, description matches by how
  * well they match, similar titles by similarity.
+ *
+ * <p>Each search is timed in {@code movies_searches_seconds}, by whether it found anything
+ * ({@code results}: none or some) and whether it had to add similar titles ({@code similar_titles}).
  */
 @ApplicationScoped
 public class MovieSearch {
@@ -96,9 +101,11 @@ public class MovieSearch {
             m.rating_count DESC NULLS LAST, m.movie_id""";
 
     private final EntityManager em;
+    private final MeterRegistry metrics;
 
-    public MovieSearch(EntityManager em) {
+    public MovieSearch(EntityManager em, MeterRegistry metrics) {
         this.em = em;
+        this.metrics = metrics;
     }
 
     /**
@@ -106,6 +113,22 @@ public class MovieSearch {
      * @param order "asc" or "desc"; ignored for relevance
      */
     public PageResponse<Movie> search(String text, int page, int size, String sort, String order) {
+        Timer.Sample sample = Timer.start(metrics);
+        Result result = searchPage(text, page, size, sort, order);
+        sample.stop(Timer.builder("movies.searches")
+                .description("Searches by title and description, and how long they took")
+                .tag("results", result.page().totalItems() == 0 ? "none" : "some")
+                .tag("similar_titles", String.valueOf(result.similarTitles()))
+                .publishPercentileHistogram()
+                .register(metrics));
+        return result.page();
+    }
+
+    /** A page of matches, and whether similar titles were added to find them. */
+    private record Result(PageResponse<Movie> page, boolean similarTitles) {
+    }
+
+    private Result searchPage(String text, int page, int size, String sort, String order) {
         boolean plainWords = !SEARCH_SYNTAX.matcher(text).find();
         Match match = new Match(onlyStopWords(text), plainWords, false);
         long total = count(match, text);
@@ -121,7 +144,7 @@ public class MovieSearch {
         }
         List<Movie> items = total == 0 ? List.of() : find(match, orderBy, text, page, size);
         int totalPages = (int) ((total + size - 1) / size);
-        return new PageResponse<>(items, page, size, total, totalPages);
+        return new Result(new PageResponse<>(items, page, size, total, totalPages), match.similarTitles());
     }
 
     private boolean onlyStopWords(String text) {

@@ -1,5 +1,7 @@
 package psia.g17.scheduler;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.logging.Log;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
@@ -31,6 +33,7 @@ import java.time.Instant;
  * </ul>
  * never while a set is being made, and after failures only once the back-off has passed. At most
  * {@code max-per-run} are queued per run, so a burst of changes doesn't bury users' Ask AI requests.
+ * What it queues is counted in {@code recommendation_agent_queued_total}.
  */
 @ApplicationScoped
 public class BackgroundAgent {
@@ -44,12 +47,14 @@ public class BackgroundAgent {
     private final RecommendationStore store;
     private final EntityManager em;
     private final Settings settings;
+    private final Counter queuedByAgent;
 
     /** The rules' timings; see application.properties. */
     public record Settings(Duration settle, Duration firstRetry, Duration longestRetry, int maxPerRun) {
     }
 
     public BackgroundAgent(@RestClient ProfilesClient profiles, RecommendationQueue queue, RecommendationStore store, EntityManager em,
+                           MeterRegistry metrics,
                            @ConfigProperty(name = "recommendation.agent.settle", defaultValue = "PT2M") Duration settle,
                            @ConfigProperty(name = "recommendation.retry.first", defaultValue = "PT30M") Duration firstRetry,
                            @ConfigProperty(name = "recommendation.retry.longest", defaultValue = "PT6H") Duration longestRetry,
@@ -59,6 +64,9 @@ public class BackgroundAgent {
         this.store = store;
         this.em = em;
         this.settings = new Settings(settle, firstRetry, longestRetry, maxPerRun);
+        this.queuedByAgent = Counter.builder("recommendation.agent.queued")
+                .description("Profile recommendation requests the background agent queued")
+                .register(metrics);
     }
 
     @Scheduled(every = "${recommendation.agent.every:10m}", delayed = "${recommendation.agent.delay:30s}",
@@ -91,6 +99,7 @@ public class BackgroundAgent {
                     try {
                         queue.forProfile(profile.id());
                         queued++;
+                        queuedByAgent.increment();
                     } catch (QueueingException e) {
                         Log.warnf("Couldn't queue recommendations for %s: %s", profile.id(), e.getMessage());
                         store.profileFailed(profile.id(), e.getMessage());

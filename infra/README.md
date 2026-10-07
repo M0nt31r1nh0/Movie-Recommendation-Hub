@@ -158,7 +158,7 @@ Every step can run again: it only changes what differs (a second `just app` rest
 At the end, `just app` prints the addresses:
 
 - **Application:** `https://<static IP>`.
-- **Grafana:** `https://<static IP>/grafana`, user `admin`, password from `cat ansible/.secrets/grafana-admin`. The **Movies** dashboard shows request rates and latency per API, Ollama's answer times, tokens/s, CPU and memory, Kafka's backlog for the worker, the databases' connections, and the nodes.
+- **Grafana:** `https://<static IP>/grafana`, user `admin`, password from `cat ansible/.secrets/grafana-admin`. The **Movies** dashboard is built on the application's own metrics (listed in the [root README](../README.md#code-layout)): users and what they do, recommendation requests and how long they take (and how often no model was needed), the worker's queue, Ollama's answer times and tokens, searches and embeddings. A last row, *Infrastructure*, has the standard ones: HTTP per API, NGINX, Kafka's lag, the databases' connections, CPU and memory per pod and node.
 - **Keycloak's admin console:** `https://<static IP>/auth/admin`, user `admin`, password from `cat ansible/.secrets/keycloak-admin`.
 - **Prometheus:** not public. On your computer (with kubectl installed), `just prometheus`, then open `http://localhost:9090`.
 
@@ -316,7 +316,7 @@ The services read the same environment variables their `application.properties` 
 - **Keycloak:** production mode behind NGINX at `/auth`. The realm is imported from `keycloak/movies-realm.json` on the first start, with the public URL in place of `http://localhost:3000` and generated secrets in place of the service accounts' dev secrets. As locally, later changes to the file don't reach an existing realm.
 - **Tokens:** their issuer is the public URL (`https://<IP>/auth/realms/movies`). The services fetch Keycloak's keys over the cluster network (`http://keycloak.movies.svc:8080/auth`), and still check that issuer.
 - **Frontend:** built with `/api` and `/auth` as its API and Keycloak addresses (relative, so the image works at any address), and served by Next.js' standalone server.
-- **Metrics:** each Quarkus service exposes Micrometer's Prometheus metrics at `/q/metrics` (`quarkus-micrometer-registry-prometheus`). The worker also measures each Ollama answer (`recommendation_llm_requests_seconds`, `recommendation_llm_tokens_total`), because Ollama has no metrics endpoint of its own.
+- **Metrics:** each Quarkus service exposes Micrometer's Prometheus metrics at `/q/metrics` (`quarkus-micrometer-registry-prometheus`): the application's own (searches, profile changes, recommendation requests and their turnaround, the worker's jobs, Ollama's answers and the embeddings; see the [root README](../README.md#code-layout)), plus Micrometer's standard HTTP and JVM ones. The `quarkus` ServiceMonitor in `k8s/monitoring.yaml.j2` scrapes them every 15 s.
 
 ## Using a real certificate
 
