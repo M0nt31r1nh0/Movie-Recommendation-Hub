@@ -44,8 +44,12 @@ class Keycloak:
                                            "username": self.admin_user, "password": self.admin_password})
             req = urllib.request.Request(f"{self.url}/realms/master/protocol/openid-connect/token",
                                          data=form.encode(), method="POST")
-            with urllib.request.urlopen(req, context=self.ctx) as res:
-                self.token = json.load(res)["access_token"]
+            try:
+                with urllib.request.urlopen(req, context=self.ctx) as res:
+                    self.token = json.load(res)["access_token"]
+            except urllib.error.HTTPError as e:
+                sys.exit(f"Keycloak refused the admin login ({self.admin_user}) with {e.code}: "
+                         f"{e.read().decode(errors='replace')}")
             self.token_until = time.time() + 30
         return self.token
 
