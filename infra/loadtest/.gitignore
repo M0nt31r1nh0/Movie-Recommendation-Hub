@@ -1,0 +1,6 @@
+# The test users' generated password
+.secrets/
+__pycache__/
+# k6's raw output while a run is in progress (results/*/*.json, .csv and .log are kept: they are the data
+# behind the report's Evaluation)
+results/*/*.out
