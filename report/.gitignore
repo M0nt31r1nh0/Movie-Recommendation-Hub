@@ -1,0 +1,7 @@
+# LaTeX build files (build.sh recreates them)
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
