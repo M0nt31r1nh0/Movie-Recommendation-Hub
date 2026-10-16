@@ -9,6 +9,9 @@
 #   just summarize <label>    the tables, from results/<label>
 #   just metrics <label>      CPU and memory per pod and node during each run, from Prometheus
 #   just teardown             delete the test users, their data, the client and the k6 pod
+#   just demo-setup [n]       n demo users (demo-001...), for realistic activity on the dashboards
+#   just demo [minutes] [n]   n demo users browsing, searching, following and asking the AI for a while
+#   just demo-teardown        delete the demo users and their data
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -29,7 +32,7 @@ setup n=users:
 pod:
     kubectl create namespace loadtest --dry-run=client -o yaml | kubectl apply -f -
     kubectl -n loadtest create configmap k6-scripts --from-file=common.js --from-file=mix.js \
-        --from-file=prepare.js --from-file=askai.js --dry-run=client -o yaml | kubectl apply -f -
+        --from-file=prepare.js --from-file=askai.js --from-file=activity.js --dry-run=client -o yaml | kubectl apply -f -
     kubectl -n loadtest delete pod k6 --ignore-not-found --wait
     kubectl apply -f k6-pod.yaml
     kubectl -n loadtest wait pod/k6 --for=condition=Ready --timeout=5m
@@ -76,3 +79,18 @@ teardown:
     ./cleanup.sh
     python3 users.py teardown --url {{url}}
     kubectl delete namespace loadtest --ignore-not-found
+
+# Demo users (demo-001...), separate from the load test's, and the k6 pod: for just demo
+demo-setup n="8":
+    @test -n "{{url}}" || { echo "No public_url from Terraform: set BASE_URL" >&2; exit 1; }
+    python3 users.py setup --url {{url}} --users {{n}} --prefix demo-
+    just pod
+
+# Realistic activity for the dashboards (not a measurement): just demo [minutes] [users], e.g. just demo 10 8
+demo minutes="10" n="8":
+    kubectl -n loadtest exec k6 -- k6 run --quiet -e BASE_URL={{url}} -e PASSWORD="$(cat .secrets/password)"         -e USER_PREFIX=demo- -e USERS={{n}} -e DURATION={{minutes}}m /scripts/activity.js | sed '/===K6-JSON-BEGIN===/,$d'
+
+# Delete the demo users' data and the demo users (the load test's client and pod are left alone)
+demo-teardown:
+    USER_PREFIX=demo- ./cleanup.sh
+    python3 users.py teardown --url {{url}} --prefix demo-
