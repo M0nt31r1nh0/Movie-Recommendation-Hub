@@ -1,0 +1,32 @@
+# The load generator: one k6 pod on the control-plane node, which runs no application pods, so k6 doesn't
+# compete with the system for CPU, and is in the same zone, so latencies have no wide-area network in them.
+# It idles; run.sh starts each k6 run in it with kubectl exec. The scripts come from the k6-scripts
+# ConfigMap, which `just pod` makes from the .js files of this folder.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k6
+  namespace: loadtest
+  labels:
+    app: k6
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  restartPolicy: Never
+  containers:
+    - name: k6
+      image: grafana/k6:1.0.0
+      command: ["sleep", "infinity"]
+      resources:
+        requests: { cpu: 250m, memory: 256Mi }
+        limits: { memory: 1Gi }
+      volumeMounts:
+        - { name: scripts, mountPath: /scripts }
+  volumes:
+    - name: scripts
+      configMap:
+        name: k6-scripts

@@ -1,0 +1,96 @@
+# The load test of the report's Evaluation: run `just` here, in the management container (cd loadtest).
+# See README.md for the whole procedure.
+#
+#   just setup [users]        the movies-loadtest client and the test users in Keycloak, and the k6 pod
+#   just prepare              each test user's profile and cached recommendations (waits for the model once)
+#   just smoke                one short run with 5 clients, to check that everything answers
+#   just run <label> [n...]   the measured runs (default 1 10 50 100 200 clients, 3 repeats each)
+#   just askai <label> <n>    n Ask AI requests at once, and how long each waits for its answer
+#   just summarize <label>    the tables, from results/<label>
+#   just metrics <label>      CPU and memory per pod and node during each run, from Prometheus
+#   just teardown             delete the test users, their data, the client and the k6 pod
+#   just demo-setup [n]       n demo users (demo-001...), for realistic activity on the dashboards
+#   just demo [minutes] [n]   n demo users browsing, searching, following and asking the AI for a while
+#   just demo-teardown        delete the demo users and their data
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+users := env_var_or_default("USERS", "200")
+url := env_var_or_default("BASE_URL", `terraform -chdir=../terraform output -raw public_url 2>/dev/null || true`)
+k6 := "kubectl -n loadtest exec k6 -- k6 run --quiet -e BASE_URL=" + url + " -e USERS=" + users
+
+default:
+    @just --list
+
+# The test users and the movies-loadtest client in Keycloak, then the k6 pod
+setup n=users:
+    @test -n "{{url}}" || { echo "No public_url from Terraform: set BASE_URL" >&2; exit 1; }
+    python3 users.py setup --url {{url}} --users {{n}}
+    just pod
+
+# (Re)create the k6 pod on the control-plane node, with the scripts of this folder
+pod:
+    kubectl create namespace loadtest --dry-run=client -o yaml | kubectl apply -f -
+    kubectl -n loadtest create configmap k6-scripts --from-file=common.js --from-file=mix.js \
+        --from-file=prepare.js --from-file=askai.js --from-file=activity.js --dry-run=client -o yaml | kubectl apply -f -
+    kubectl -n loadtest delete pod k6 --ignore-not-found --wait
+    kubectl apply -f k6-pod.yaml
+    kubectl -n loadtest wait pod/k6 --for=condition=Ready --timeout=5m
+    kubectl -n loadtest get pod k6 -o wide
+
+# Log every test user in once, so each has a profile and a cached Recommended for you
+prepare:
+    {{k6}} -e PASSWORD="$(cat .secrets/password)" /scripts/prepare.js | sed '/===K6-JSON-BEGIN===/,$d'
+
+# A short run with 5 clients (results/smoke), to check the setup before the long runs
+smoke:
+    REPEATS=1 WARMUP=20 RAMP=5 STEADY=30 SETTLE=0 BASE_URL={{url}} ./run.sh smoke 5
+    python3 summarize.py results/smoke
+
+# The measured runs: just run <label> [clients...], e.g. just run final 1 10 50 100 200
+run label *clients:
+    BASE_URL={{url}} ./run.sh {{label}} {{clients}}
+
+# n Ask AI requests sent at once (users loadtest-001..n): just askai <label> <n> [prompt offset]
+askai label n offset="0":
+    mkdir -p results/{{label}}
+    {{k6}} -e PASSWORD="$(cat .secrets/password)" -e CLIENTS={{n}} -e PROMPT_OFFSET={{offset}} -e LABEL={{label}} \
+        /scripts/askai.js > results/{{label}}/askai-c{{n}}-o{{offset}}.out 2> results/{{label}}/askai-c{{n}}-o{{offset}}.log || [ $? -eq 99 ]
+    grep -h 'user [0-9]*:' results/{{label}}/askai-c{{n}}-o{{offset}}.log | sed 's/.*msg="\(.*\)" source.*/\1/' || true
+    sed -n '/===K6-JSON-BEGIN===/,/===K6-JSON-END===/p' results/{{label}}/askai-c{{n}}-o{{offset}}.out | sed '1d;$d' > results/{{label}}/askai-c{{n}}-o{{offset}}.json
+    grep -m1 '^askai' results/{{label}}/askai-c{{n}}-o{{offset}}.out && rm results/{{label}}/askai-c{{n}}-o{{offset}}.out
+
+# The tables of a label's runs: results/<label>/summary.csv and endpoints.csv
+summarize label:
+    python3 summarize.py results/{{label}}
+
+# CPU and memory during each run of a label, from Prometheus (port-forwarded while it runs)
+metrics label:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090 >/dev/null &
+    pf=$!
+    trap 'kill $pf' EXIT
+    sleep 3
+    python3 prom.py results/{{label}}
+
+# Delete the test users' data, the test users and the client, and the k6 pod (the results stay)
+teardown:
+    ./cleanup.sh
+    python3 users.py teardown --url {{url}}
+    kubectl delete namespace loadtest --ignore-not-found
+
+# Demo users (demo-001...), separate from the load test's, and the k6 pod: for just demo
+demo-setup n="8":
+    @test -n "{{url}}" || { echo "No public_url from Terraform: set BASE_URL" >&2; exit 1; }
+    python3 users.py setup --url {{url}} --users {{n}} --prefix demo-
+    just pod
+
+# Realistic activity for the dashboards (not a measurement): just demo [minutes] [users], e.g. just demo 10 8
+demo minutes="10" n="8":
+    kubectl -n loadtest exec k6 -- k6 run --quiet -e BASE_URL={{url}} -e PASSWORD="$(cat .secrets/password)"         -e USER_PREFIX=demo- -e USERS={{n}} -e DURATION={{minutes}}m /scripts/activity.js | sed '/===K6-JSON-BEGIN===/,$d'
+
+# Delete the demo users' data and the demo users (the load test's client and pod are left alone)
+demo-teardown:
+    USER_PREFIX=demo- ./cleanup.sh
+    python3 users.py teardown --url {{url}} --prefix demo-

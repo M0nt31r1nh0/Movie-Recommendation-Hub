@@ -1,0 +1,3 @@
+# These files run in Linux (the management container, the k6 pod): keep LF line endings even on a
+# Windows checkout with core.autocrlf=true, where bash would otherwise fail on the CR at each line's end.
+* text=auto eol=lf

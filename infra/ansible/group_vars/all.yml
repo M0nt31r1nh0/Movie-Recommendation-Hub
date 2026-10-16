@@ -15,7 +15,7 @@ pod_network_cidr: 192.168.0.0/16
 # --- Application images ---------------------------------------------------------------------------
 # Built and pushed by infra/build-images.sh <registry> <tag>: set the same values here.
 image_registry: docker.io/tiagog17   # Docker Hub, public
-image_tag: v1
+image_tag: v2
 # For a private registry, its address and a read-only token (e.g. a GitLab deploy token with
 # read_registry). Leave server empty for a public one.
 image_pull_secret:
