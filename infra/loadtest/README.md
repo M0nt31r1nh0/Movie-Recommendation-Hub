@@ -6,11 +6,11 @@ How throughput and latency change as the number of concurrent clients grows, on 
 |---|---|
 | `users.py` | Adds the `movies-loadtest` client and the test users `loadtest-001…200` to Keycloak through its admin API, or deletes them (`teardown`) |
 | `k6-pod.yaml` | The k6 pod (`grafana/k6:1.0.0`), on the control-plane node, in namespace `loadtest` |
-| `common.js` | Shared by the scripts: addresses, test users, logging in and refreshing each user's token |
+| `common.js` | Shared by the scripts, with addresses, test users, logging in and refreshing each user's token |
 | `prepare.js` | Logs every test user in once, so each has a profile and a cached *Recommended for you* |
-| `mix.js` | The measured load: N clients in a closed loop over a weighted mix of requests |
-| `askai.js` | Optional: N *Ask AI* requests sent at once, and how long each waits for its answer |
-| `activity.js` | Not a measurement: a few demo users acting like people for a while, so the dashboards and screenshots show real activity |
+| `mix.js` | The measured load, with N clients in a closed loop over a weighted mix of requests |
+| `askai.js` | An optional test of N *Ask AI* requests sent at once, and how long each waits for its answer |
+| `activity.js` | Not a measurement. A few demo users act like people for a while, so the dashboards and screenshots show real activity |
 | `run.sh` | Runs `mix.js` for each number of clients, several times, and saves the results |
 | `summarize.py`, `prom.py`, `plot.py` | The tables, CPU/memory per pod from Prometheus, and the report's figure |
 | `cleanup.sh` | Deletes the test users' profiles and recommendations from the databases |
@@ -18,26 +18,26 @@ How throughput and latency change as the number of concurrent clients grows, on 
 
 ## What is measured
 
-Each client (a k6 *virtual user*) logs in as its own test user, then repeats: pick a request from the mix, send it, wait 0.5 to 1.5 s (1 s on average, `THINK`), and so on.
+Each client (a k6 *virtual user*) logs in as its own test user, then repeats the same cycle. It picks a request from the mix, sends it, waits 0.5 to 1.5 s (1 s on average, `THINK`), and so on.
 
 | Share | Kind | Requests (via NGINX) |
 |---:|---|---|
 | 35% | Browse the catalogue | `GET /api/movies?page=<0–99>&size=24` |
-| 25% | Search | `GET /api/movies/search?q=<one of 24 queries>&size=24`: words, prefixes, typos, phrases, `or`, `-word` |
+| 25% | Search | `GET /api/movies/search?q=<one of 24 queries>&size=24`, with words, prefixes, typos, phrases, `or` and `-word` |
 | 10% | A movie | `GET /api/movies/{id}` |
 | 15% | A profile | `GET /api/profiles/{id}` and `GET /api/profiles/{id}/watched` (another test user's) |
 | 5% | Change the profile | `PUT /api/profiles/me/watched/{id}`, then `DELETE` the same, so the profile ends as it began |
-| 10% | Recommended for you | `GET /api/recommendations/me` (cached: every test user already has a set) |
+| 10% | Recommended for you | `GET /api/recommendations/me` (cached, since every test user already has a set) |
 
 The mix leaves the model out on purpose. One recommendation takes the CPUs minutes, so on-demand recommendations are measured separately (`askai.js`, step 6), as a queue rather than as throughput.
 
-**One run** (`run.sh`) ramps the clients up over 30 s (`RAMP`), counts the first 60 s as warm-up (`WARMUP`), then measures for 180 s (`STEADY`). Every request is tagged with its phase and endpoint, and only the steady-state ones count. Logins and token refreshes are tagged apart, so they never count either: tokens live 5 minutes, and each client refreshes its own a minute before it expires. Defaults are 1, 10, 50, 100 and 200 clients, each repeated 3 times: 15 runs of about 4.5 minutes, about 70 minutes in all.
+**One run** (`run.sh`) ramps the clients up over 30 s (`RAMP`), counts the first 60 s as warm-up (`WARMUP`), then measures for 180 s (`STEADY`). Every request is tagged with its phase and endpoint, and only the steady-state ones count. Logins and token refreshes are tagged apart, so they never count either. Tokens live 5 minutes, and each client refreshes its own a minute before it expires. The defaults are 1, 10, 50, 100 and 200 clients, each repeated 3 times, which makes 15 runs of about 4.5 minutes, about 70 minutes in all.
 
-For each number of clients you get: throughput (req/s), latency p50/p95/p99 and the error rate, overall and per endpoint, as mean ± standard deviation over the repeats. Prometheus also gives the CPU and memory of every pod and node during each run, which is how we find the bottleneck.
+For each number of clients you get the throughput (req/s), latency p50/p95/p99 and the error rate, overall and per endpoint, as mean ± standard deviation over the repeats. Prometheus also gives the CPU and memory of every pod and node during each run, which is how we find the bottleneck.
 
 ## Results (15/10/2026)
 
-The run `final`, on the default VMs (master `e2-standard-2`, two workers `e2-standard-4`), image tag `v1` (built on 06/10/2026, before the custom application metrics were added; the only later change to the services' code is the commit that adds them, and the evaluation uses only the standard HTTP, container and node metrics), 3 repeats per step. The data is in [results/final/](results/final/): one `.json` summary and one `.log` per run, plus `summary.csv`, `endpoints.csv`, `resources.csv` and `windows.csv`.
+These results come from the run `final`, on the default VMs (master `e2-standard-2`, two workers `e2-standard-4`), with image tag `v1`. That image was built on 06/10/2026, before the custom application metrics were added. The only later change to the services' code is the commit that adds them, and the evaluation uses only the standard HTTP, container and node metrics. The run has 3 repeats per step. The data is in [results/final/](results/final/), with one `.json` summary and one `.log` per run, plus `summary.csv`, `endpoints.csv`, `resources.csv` and `windows.csv`.
 
 | Clients | Throughput (req/s) | p50 (ms) | p95 (ms) | p99 (ms) | Errors (%) | worker1 CPU |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -49,11 +49,23 @@ The run `final`, on the default VMs (master `e2-standard-2`, two workers `e2-sta
 | 300 | 205.6 ± 18.4 | 472.6 | 1,661.3 | 3,962.8 | 0.03 | 100% |
 | 400 | 198.8 ± 2.3 | 928.2 | 3,253.9 | 5,830.7 | 0.04 | (no sample) |
 
-Throughput grows with the number of clients up to 200, where it peaks at about 216 req/s; beyond that it stays flat and the latency grows instead, with the median reaching about 0.9 s at 400 clients. The errors stay at or below 0.04% throughout.
+Throughput grows with the number of clients up to 200, where it peaks at about 216 req/s. Beyond that it stays flat and the latency grows instead, with the median reaching about 0.9 s at 400 clients. The errors stay at or below 0.04% throughout. Prometheus shows that they were 152 responses `500` from `GET /recommendations/me`, spread over the whole test, at low load too. That endpoint fetches the titles of a ready set from movies-service (`RecommendationResource.java`, `movies()`) without handling a failure of that call, so a timeout or an expiring service-account token there becomes a `500`. The logs of that run were lost when the pod was replaced, so the exact cause is not confirmed. Catching the failure and returning the set without titles, or retrying once, would remove it.
 
-The limit is worker1's CPU, which reaches 97% at 200 clients and 100% at 300. The scheduler had placed every stateless pod on worker1 (see [../README.md → The VMs](../README.md#the-vms)), next to the four databases, while worker2 stayed at 8%. The largest single consumer is the movies database, at 2.3 of worker1's 4 vCPUs from 200 clients on: 70% of the mix is catalogue queries, and search runs full-text and trigram queries in PostgreSQL. movies-service itself used about 0.5 cores. The master, which ran k6, peaked at 38%, so the load generator did not limit the test. At 400 clients Prometheus has no CPU sample for worker1's node for that window, most likely because its exporter could not answer scrapes in time at 100% CPU.
+The limit is worker1's CPU, which reaches 97% at 200 clients and 100% at 300. The scheduler had placed every stateless pod on worker1 (see [../README.md → The VMs](../README.md#the-vms)), next to the four databases, while worker2 stayed at 8%. The largest single consumer is the movies database, at 2.3 of worker1's 4 vCPUs from 200 clients on, because 70% of the mix is catalogue queries and search runs full-text and trigram queries in PostgreSQL. movies-service itself used about 0.5 cores. The master, which ran k6, peaked at 38%, so the load generator did not limit the test. At 400 clients Prometheus has no CPU sample for worker1's node for that window, most likely because its exporter could not answer scrapes in time at 100% CPU. In Grafana, worker1's lines in *Node CPU used* and *Node memory available* have gaps from about 18:17 UTC, exactly during the 300- and 400-client runs, while the other nodes have none.
 
-Above 200 clients the 200 test users are shared, two clients per user; that changes how often each account sends requests, not what is measured.
+The screenshots below are Grafana's view of the same run (dashboard *Movies*, row *Infrastructure*, 15/10/2026 16:56 to 18:46 UTC).
+
+![NGINX requests per second, with three staircases from 1 to 200 clients, then the 300- and 400-client runs, flat near 200 req/s](../../docs/screenshots/grafana-load-rps.png)
+
+![Average latency by service, near zero up to 200 clients, 1 to 2 s at 300 and 400](../../docs/screenshots/grafana-load-latency.png)
+
+![CPU by pod, with movies-db reaching about 2.4 cores at each 200-client step and staying there](../../docs/screenshots/grafana-load-cpu-1.png)
+
+![Node CPU, with worker1 (10.10.0.4) at 97 to 100%, the master with k6 under 40%, worker2 near 8%, and worker1's line has gaps during the 300 and 400 runs](../../docs/screenshots/grafana-load-cpu-2.png)
+
+![The 5xx responses of recommendation-service, 152 responses 500 from GET /recommendations/me over the test](../../docs/screenshots/grafana-load-errors.png)
+
+Above 200 clients the 200 test users are shared, two clients per user. That changes how often each account sends requests, not what is measured.
 
 ## Procedure
 
@@ -61,14 +73,14 @@ All commands run in the management container, from `infra/loadtest/`, unless a s
 
 ### 0. Before you start
 
-1. **Deploy** as usual (`infra/README.md`): `just mgmt-start`, `just mgmt`, then `just all` (or `just start` if the VMs are only stopped).
+1. **Deploy** as usual (`infra/README.md`) with `just mgmt-start`, `just mgmt`, then `just all` (or `just start` if the VMs are only stopped).
 2. **Check the cluster is quiet:**
    ```bash
    kubectl get nodes                       # 3 nodes, Ready
    kubectl -n movies get pods              # everything Running and READY
    ```
-3. **Wait until the movie embeddings are done.** Right after a new cluster, movies-service embeds about 9,000 movies through Ollama, roughly an hour, and that would load the CPUs during the test. In Grafana's *Movies* dashboard, *Movies still to embed* must be 0. Or check the log: `kubectl -n movies logs deploy/movies-service | grep -i embedded | tail -1`.
-4. **No recommendation in progress:** *Requests waiting for an answer* (Grafana, *Recommendations* row) is 0.
+3. **Wait until the movie embeddings are done.** Right after a new cluster, movies-service embeds about 9,000 movies through Ollama, roughly an hour, and that would load the CPUs during the test. In Grafana's *Movies* dashboard, *Movies still to embed* must be 0. Or check the log with `kubectl -n movies logs deploy/movies-service | grep -i embedded | tail -1`.
+4. **No recommendation in progress.** *Requests waiting for an answer* (Grafana, *Recommendations* row) must be 0.
 5. Note the image tag (`image_tag` in `ansible/group_vars/all.yml`) and the date. The report states both.
 
 ### 1. Test users and the k6 pod
@@ -80,7 +92,7 @@ just setup            # 200 users; or: just setup 100
 
 This creates the `movies-loadtest` client and the users in Keycloak, then the k6 pod on the control-plane node. The test users' password is generated once and saved in `loadtest/.secrets/password`, which git ignores. Keycloak's admin password comes from `ansible/.secrets/keycloak-admin`. Running `just setup` again only adds what's missing.
 
-Check: the last line shows the `k6` pod `Running` on the `master` node.
+To check, the last line should show the `k6` pod `Running` on the `master` node.
 
 ### 2. Prepare the users
 
@@ -88,7 +100,7 @@ Check: the last line shows the `k6` pod `Running` on the `master` node.
 just prepare
 ```
 
-`loadtest-001` asks for its first *Recommended for you*, and the model makes it: **this takes a few minutes**, and the script waits. The other 199 users then get a copy at once, because their empty profiles have the same fingerprint. The last line must say `READY=199 PREPARING=0 FAILED=0 ERROR=0`.
+`loadtest-001` asks for its first *Recommended for you*, and the model makes it. **This takes a few minutes**, and the script waits. The other 199 users then get a copy at once, because their empty profiles have the same fingerprint. The last line must say `READY=199 PREPARING=0 FAILED=0 ERROR=0`.
 
 ### 3. Smoke test (1 minute)
 
@@ -106,10 +118,10 @@ just run final                     # 1 10 50 100 200 clients, 3 repeats each
 
 Each run prints one line, e.g. `clients=50 req/s=47.8 p50=21.3ms p95=88.0ms p99=160.2ms failed=0.00%`. The results go to `results/final/`.
 
-- **While it runs, take the Grafana screenshots** for the report (`https://<IP>/grafana`, the *Movies* dashboard). Take them during a 100- or 200-client run, with the time range set to *Last 15 minutes*: the *Infrastructure* row (*Requests per second, by service*, *Average latency, by service*, *CPU by pod*, *Node CPU used*), plus one of the whole dashboard. Save them as PNG.
-- **If the system clearly isn't saturated at 200** (p95 still flat, CPUs well below 100%), add higher steps: `just run final 400`. The new runs land in the same folder, and the tables include them.
-- **To keep it shorter**, e.g. if the VMs' time is short: `REPEATS=1 just run final`, about 25 minutes. Say so in the report.
-- Don't use the application in a browser meanwhile: it would add to the measured load.
+- **While it runs, take the Grafana screenshots** for the report (`https://<IP>/grafana`, the *Movies* dashboard). Take them during a 100- or 200-client run, with the time range set to *Last 15 minutes*, and capture the *Infrastructure* row (*Requests per second, by service*, *Average latency, by service*, *CPU by pod*, *Node CPU used*), plus one of the whole dashboard. Save them as PNG.
+- **If the system clearly isn't saturated at 200** (p95 still flat, CPUs well below 100%), add higher steps with `just run final 400`. The new runs land in the same folder, and the tables include them.
+- **To keep it shorter**, e.g. if the VMs' time is short, run `REPEATS=1 just run final`, which takes about 25 minutes. Say so in the report.
+- Don't use the application in a browser meanwhile, because it would add to the measured load.
 
 ### 5. Tables and resource use
 
@@ -137,15 +149,15 @@ This deletes the test users' profiles and recommendations from the databases, th
 
 ### 8. What to send back
 
-- the folder `infra/loadtest/results/final/` (all `*.json`, `*.log` and `*.csv`; commit it, it's the data behind the report);
-- the Grafana screenshots;
+- the folder `infra/loadtest/results/final/` (all `*.json`, `*.log` and `*.csv`), which you should commit because it's the data behind the report,
+- the Grafana screenshots,
 - the image tag, the date, and any setting you changed (`REPEATS`, extra steps…).
 
 The report's figure comes from `python plot.py results/final --out ../../report/figures/evaluation.pdf`. It needs matplotlib, so run it on your computer, not in the management container.
 
 ## Demo activity, for the dashboards and screenshots
 
-`activity.js` is not part of the evaluation. It makes a few demo users (`demo-001`, `demo-002`…, separate from the load test's) behave like people for a while: they pause 3 to 8 seconds between actions, and their changes stay. On their first action each picks two or three favourite genres and follows two other demo users. Then they browse the catalogue, search (one query has a typo, `godfater`), open movies they found, mark some as watched, save some for later, look at each other's profiles and read their *Recommended for you*. The first three each send one *Ask AI* request (`ASK_AI`). Their changed profiles make the background agent prepare new sets, so the worker and Ollama have real work too.
+`activity.js` is not part of the evaluation. It makes a few demo users (`demo-001`, `demo-002`…, separate from the load test's) behave like people for a while. They pause 3 to 8 seconds between actions, and their changes stay. On their first action each picks two or three favourite genres and follows two other demo users. Then they browse the catalogue, search (one query has a typo, `godfater`), open movies they found, mark some as watched, save some for later, look at each other's profiles and read their *Recommended for you*. The first three each send one *Ask AI* request (`ASK_AI`). Their changed profiles make the background agent prepare new sets, so the worker and Ollama have real work too.
 
 ```bash
 just demo-setup        # 8 demo users, and the k6 pod (again after a just teardown or just stop)
@@ -153,7 +165,7 @@ just demo 10           # 10 minutes of activity; just demo 20 12 for 20 minutes 
 just demo-teardown     # afterwards, if the demo users shouldn't stay
 ```
 
-Take the Grafana screenshots during or right after `just demo`, with the time range on *Last 30 minutes*. The *Ask AI* answers and the agent's new sets take a few minutes each, so the *Recommendations* row fills in over the following 15 to 30 minutes. Keep the demo users for the website screenshots if you want the *Users* page and the profiles to show follows and watched movies; delete them with `just demo-teardown` before recording the video if you'd rather show only real accounts.
+Take the Grafana screenshots during or right after `just demo`, with the time range on *Last 30 minutes*. The *Ask AI* answers and the agent's new sets take a few minutes each, so the *Recommendations* row fills in over the following 15 to 30 minutes. Keep the demo users for the website screenshots if you want the *Users* page and the profiles to show follows and watched movies, and delete them with `just demo-teardown` before recording the video if you'd rather show only real accounts.
 
 ## Settings
 
@@ -188,12 +200,12 @@ These numbers don't belong in the report, since everything shares one machine. T
 
 | Problem | Fix |
 |---|---|
-| `users.py`: `HTTP Error 401` getting the admin token | `ansible/.secrets/keycloak-admin` doesn't match Keycloak's admin password (it only applies on Keycloak's first start). Pass the right one with `--admin-password`. |
-| `just setup`: the k6 pod stays `Pending` | `kubectl -n loadtest describe pod k6`: the control-plane node needs about 250m CPU and 256 MiB free. Lower `requests` in `k6-pod.yaml`. |
-| `prepare`: `loadtest-001's first set is FAILED` | The worker or Ollama is not ready: `kubectl -n movies logs deploy/recommendation-worker`. Fix it, then run `just prepare` again. |
-| `prepare`: some users `PREPARING` instead of `READY` | Their profile wasn't empty (e.g. after an interrupted run). It doesn't affect `mix.js`, since `/recommendations/me` still answers at once. To start clean, `just teardown`, then `just setup` and `just prepare`. |
+| `users.py` fails with `HTTP Error 401` when getting the admin token | `ansible/.secrets/keycloak-admin` doesn't match Keycloak's admin password (it only applies on Keycloak's first start). Pass the right one with `--admin-password`. |
+| After `just setup`, the k6 pod stays `Pending` | Run `kubectl -n loadtest describe pod k6`. The control-plane node needs about 250m CPU and 256 MiB free, so lower `requests` in `k6-pod.yaml`. |
+| `prepare` reports `loadtest-001's first set is FAILED` | The worker or Ollama is not ready. Check `kubectl -n movies logs deploy/recommendation-worker`, fix it, then run `just prepare` again. |
+| `prepare` leaves some users `PREPARING` instead of `READY` | Their profile wasn't empty (e.g. after an interrupted run). It doesn't affect `mix.js`, since `/recommendations/me` still answers at once. To start clean, run `just teardown`, then `just setup` and `just prepare`. |
 | `login failed with 401: invalid_grant` | The users' password in `.secrets/password` differs from Keycloak's, e.g. the folder was copied from another machine. Run `just teardown` and `just setup`. |
-| `login failed with 400: unauthorized_client` | The `movies-loadtest` client is missing: run `just setup`. |
-| Many `401` in the runs | Tokens expired: a client waited over 5 minutes, e.g. a stalled run. Look at the run's `.log`. |
+| `login failed with 400: unauthorized_client` | The `movies-loadtest` client is missing, so run `just setup`. |
+| Many `401` in the runs | Tokens expired because a client waited over 5 minutes, e.g. in a stalled run. Look at the run's `.log`. |
 | Errors rise only at many clients | Expected once the system saturates. Note which endpoint (`endpoints.csv`) and which pod's CPU (`resources.csv`). |
 | `bash\r: No such file or directory` | The scripts got Windows line endings (`core.autocrlf=true`). This folder's `.gitattributes` keeps them LF on checkout. If it still happens, delete the folder's scripts and run `git checkout -- infra/loadtest` on your computer. |
