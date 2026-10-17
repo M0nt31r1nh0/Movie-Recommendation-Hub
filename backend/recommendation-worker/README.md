@@ -11,4 +11,11 @@ Takes recommendation jobs from Kafka (`recommendation.requests`), one at a time,
 ./mvnw test           # needs neither Docker nor Ollama
 ```
 
-The full documentation is in the [backend README → recommendation-worker](../README.md#recommendation-worker), with [Ask AI](../README.md#ask-ai) and [choosing a model](../README.md#choosing-a-model).
+### Tests
+
+```bash
+cd backend/recommendation-worker
+./mvnw test
+```
+
+They need neither Docker nor Ollama. `RecommendationPipelineTest` replaces the model with a Mockito mock and movies-service with a small in-memory catalogue (`FakeMovies`). `RecommendationWorkerTest` sends jobs through in-memory channels instead of Kafka (`InMemoryKafka`), with the pipeline mocked, and checks the results, their keys and the metrics.
