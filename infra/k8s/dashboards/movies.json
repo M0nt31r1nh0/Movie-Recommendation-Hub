@@ -2199,6 +2199,156 @@
         "x": 0,
         "y": 136
       }
+    },
+    {
+      "id": 48,
+      "type": "row",
+      "title": "Logs (Loki, collected by Fluent Bit)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 144
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Log lines per minute, by app",
+      "description": "Every line the movies namespace's containers wrote, from Loki.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "refId": "A",
+          "expr": "sum by (app) (count_over_time({namespace=\"movies\"}[1m]))",
+          "queryType": "range",
+          "legendFormat": "{{app}}"
+        }
+      ],
+      "id": 49,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 145
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Warnings and errors per minute, by app",
+      "description": "Lines with WARN, ERROR or FATAL in them.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "refId": "A",
+          "expr": "sum by (app) (count_over_time({namespace=\"movies\"} |~ \"WARN|ERROR|FATAL\" [1m]))",
+          "queryType": "range",
+          "legendFormat": "{{app}}"
+        }
+      ],
+      "id": 50,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 145
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Warnings and errors",
+      "description": "The lines themselves, newest first. Explore (Loki) searches every log.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "refId": "A",
+          "expr": "{namespace=\"movies\"} |~ \"WARN|ERROR|FATAL\"",
+          "queryType": "range"
+        }
+      ],
+      "id": 51,
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 153
+      }
     }
   ],
   "templating": {

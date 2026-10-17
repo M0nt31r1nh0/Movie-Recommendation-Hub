@@ -1,0 +1,120 @@
+# Loki: keeps the logs of every container in the cluster, which Fluent Bit sends it
+# (k8s/platform/fluent-bit.values.yaml.j2), for Grafana, which has it as a data source
+# (k8s/platform/kube-prometheus-stack.values.yaml.j2). Not public: Grafana queries it inside the cluster.
+#
+# One process with every part of Loki in it (its "monolithic" mode), keeping its index, chunks and
+# write-ahead log in files on its volume, a folder on a worker's data disk (data-loki-0 in persistent_volumes,
+# ansible/group_vars/all.yml), so the logs survive stopping and destroying the VMs, like Prometheus's history.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki
+  namespace: monitoring
+data:
+  loki.yaml: |
+    # One tenant: every log is in the same place.
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+      log_level: warn
+
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /loki
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+
+    schema_config:
+      configs:
+        - from: "2026-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    # Kept 7 days, as long as Prometheus keeps its samples; the compactor deletes older logs.
+    limits_config:
+      retention_period: 168h
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+
+    analytics:
+      reporting_enabled: false
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki
+  namespace: monitoring
+spec:
+  serviceName: loki
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+      annotations:
+        # Restart when the configuration changes.
+        movies/config-hash: "{{ loki_config_hash }}"
+    spec:
+      containers:
+        - name: loki
+          image: grafana/loki:{{ loki_version }}
+          args: [-config.file=/etc/loki/loki.yaml]
+          ports:
+            - name: http
+              containerPort: 3100
+          # Ready once it has replayed its write-ahead log and joined its (one-member) ring.
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+              readOnly: true
+            - name: data
+              mountPath: /loki
+      volumes:
+        - name: config
+          configMap:
+            name: loki
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ storage_class }}
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: monitoring
+  labels:
+    app: loki
+spec:
+  selector:
+    app: loki
+  ports:
+    - name: http
+      port: 3100

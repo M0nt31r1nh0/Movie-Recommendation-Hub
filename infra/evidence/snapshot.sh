@@ -58,6 +58,19 @@ sql() {
 r = json.load(sys.stdin)["data"]["result"]
 print(datetime.datetime.fromtimestamp(float(r[0]["value"][1]), datetime.timezone.utc).isoformat() if r else "no samples")'
 
+  # The oldest log line Loki holds, and whose: a new, empty Loki would have a later one. It keeps 7 days,
+  # so searching from 8 days back finds the first line it still has.
+  echo "== loki: its oldest log line"
+  start=$(( $(date +%s) - 8 * 86400 ))000000000
+  kubectl get --raw "/api/v1/namespaces/monitoring/services/loki:3100/proxy/loki/api/v1/query_range?query=%7Bjob%3D%22fluent-bit%22%7D&direction=forward&limit=1&start=$start" \
+    | python3 -c 'import datetime, json, sys
+r = json.load(sys.stdin)["data"]["result"]
+if r:
+    labels, (ns, _) = r[0]["stream"], r[0]["values"][0]
+    print(datetime.datetime.fromtimestamp(int(ns) / 1e9, datetime.timezone.utc).isoformat(), labels.get("namespace"), labels.get("pod"))
+else:
+    print("no logs")'
+
   # When Grafana's database was created, read from a copy of it: a new, empty Grafana would have later dates.
   # Copied from the worker's data disk with Ansible (Grafana's image has no cat or tar to copy it out).
   echo "== grafana: its users and organisations, and when they were created"

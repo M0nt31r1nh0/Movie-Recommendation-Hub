@@ -12,7 +12,7 @@ Everything the application runs on, in two setups:
 | `mgmt/` | The management container, with Terraform, Ansible, kubectl and gcloud, so your computer only needs Docker |
 | `terraform/` | The VPC, firewall and VMs (1 control plane + 2 workers by default), and Ansible's inventory |
 | `terraform/persistent/` | One data disk per worker (every volume) and the static IP, which outlive the VMs, in their own Terraform state. See [Persistent data](#persistent-data) |
-| `ansible/` | The playbooks `01-nodes`, `02-cluster` (Kubernetes), `03-platform` (volumes, Strimzi, Prometheus/Grafana), `04-app` (the application), and their settings in `group_vars/all.yml` |
+| `ansible/` | The playbooks `01-nodes`, `02-cluster` (Kubernetes), `03-platform` (volumes, Strimzi, Prometheus/Grafana, Loki/Fluent Bit), `04-app` (the application), and their settings in `group_vars/all.yml` |
 | `k8s/` | The Kubernetes manifests, as templates Ansible fills in, and Grafana's dashboard (`dashboards/movies.json`) |
 | `build-images.sh` | Builds the five application images and pushes them to a registry |
 | `justfile` | The cloud deployment's commands (see [Command reference](#command-reference)) |
@@ -28,9 +28,9 @@ Three VMs in `europe-west4-b` (`gcp_zone`), all Ubuntu 24.04 LTS, in the VPC `g1
 |---|---|---|---|---|
 | `master` | `e2-standard-2` (`master_machine_type`) | 30 GB boot disk | Kubernetes control plane | The API server, etcd, scheduler and controller manager. kubeadm taints it `NoSchedule`, so no application pod runs here. Only the k6 pod of the load test tolerates it |
 | `worker1` | `e2-standard-4` (`worker_machine_type`) | 30 GB boot disk (`disk_size_gb`) + data disk `g17-data-worker1`, 40 GB | Worker and **edge node**, with network tag `edge`, the static IP `g17-edge` and node label `movies/edge=true` | NGINX (the only public entry point), the four PostgreSQL pods, Kafka brokers 0 and 2 |
-| `worker2` | `e2-standard-4` | 30 GB boot disk + data disk `g17-data-worker2`, 40 GB | Worker | Ollama, Kafka broker 1, Prometheus, Grafana |
+| `worker2` | `e2-standard-4` | 30 GB boot disk + data disk `g17-data-worker2`, 40 GB | Worker | Ollama, Kafka broker 1, Prometheus, Grafana, Loki |
 
-The pods without a volume (the frontend, Keycloak, the four services, the operators, kube-state-metrics, Kafka Exporter) go on either worker, wherever the scheduler puts them. Each volume-free pod has one replica and no anti-affinity or topology spread constraints. On 15/10/2026 `kubectl -n movies get pods -o wide` showed all six stateless Deployments on worker1, next to the databases, which made worker1 the bottleneck of the load test ([loadtest/README.md → Results](loadtest/README.md#results-15102026)). On the other hand, pods with volumes run on the worker whose data disk holds that volume (`persistent_volumes` in `ansible/group_vars/all.yml`), and NGINX has `nodeSelector: movies/edge: "true"` (`k8s/nginx.yaml.j2`). The edge node is the first worker (`edge_node`, which Terraform writes into `ansible/inventory.ini`). Calico, kube-proxy and node-exporter run on every node.
+The pods without a volume (the frontend, Keycloak, the four services, the operators, kube-state-metrics, Kafka Exporter) go on either worker, wherever the scheduler puts them. Each volume-free pod has one replica and no anti-affinity or topology spread constraints. On 15/10/2026 `kubectl -n movies get pods -o wide` showed all six stateless Deployments on worker1, next to the databases, which made worker1 the bottleneck of the load test ([loadtest/README.md → Results](loadtest/README.md#results-15102026)). On the other hand, pods with volumes run on the worker whose data disk holds that volume (`persistent_volumes` in `ansible/group_vars/all.yml`), and NGINX has `nodeSelector: movies/edge: "true"` (`k8s/nginx.yaml.j2`). The edge node is the first worker (`edge_node`, which Terraform writes into `ansible/inventory.ini`). Calico, kube-proxy, node-exporter and Fluent Bit run on every node.
 
 Every disk is `pd-balanced`. The master and worker2 have ephemeral public addresses, which can change when the VMs are stopped and started, while worker1 always has the static IP.
 
@@ -42,7 +42,7 @@ The firewall (`terraform/network.tf`) has three rules:
 | `g17-admin` | `admin_cidrs` (default `0.0.0.0/0`, which you should narrow to your address) | SSH (22), the Kubernetes API (6443), ICMP |
 | `g17-web` | Anywhere | 80 and 443, only to the VM tagged `edge` |
 
-The versions (`ansible/group_vars/all.yml`) are Kubernetes 1.35, Calico v3.32.2, Helm v4.3.0, Strimzi 1.2.0 with Kafka 4.3.1, kube-prometheus-stack 91.8.2. The pod network is `192.168.0.0/16` (Calico's default).
+The versions (`ansible/group_vars/all.yml`) are Kubernetes 1.35, Calico v3.32.2, Helm v4.3.0, Strimzi 1.2.0 with Kafka 4.3.1, kube-prometheus-stack 91.8.2, Loki 3.7.8 and Fluent Bit 5.1.3 (chart 0.58.3). The pod network is `192.168.0.0/16` (Calico's default).
 
 ## What runs in the cluster
 
@@ -92,7 +92,7 @@ Clients connect to the Service `movies-kafka-kafka-bootstrap.kafka.svc.cluster.l
 
 ### Namespace `monitoring`
 
-kube-prometheus-stack, release `monitoring` (`k8s/platform/kube-prometheus-stack.values.yaml.j2`):
+kube-prometheus-stack, release `monitoring` (`k8s/platform/kube-prometheus-stack.values.yaml.j2`), and the logs' Loki and Fluent Bit (see [Logs](#logs)):
 
 | Workload | Kind | Notes |
 |---|---|---|
@@ -100,6 +100,8 @@ kube-prometheus-stack, release `monitoring` (`k8s/platform/kube-prometheus-stack
 | Grafana (`monitoring-grafana`) | Deployment, `Recreate`, on worker2 | Keeps its database in a 2Gi claim, is served at `/grafana/` and loads dashboards from ConfigMaps labelled `grafana_dashboard=1` |
 | Prometheus operator, kube-state-metrics | Deployments | |
 | node-exporter | DaemonSet | One per node |
+| Loki | StatefulSet (`k8s/platform/loki.yaml.j2`), on worker2 | Keeps every container's logs for 7 days in a 5Gi claim, with 50m, 128Mi → 1Gi. Service `loki:3100` |
+| Fluent Bit (`fluent-bit`) | DaemonSet (Helm chart `fluent/fluent-bit`) | One per node, the control plane included, with 20m, 32Mi → 128Mi |
 
 Alertmanager is disabled, and so are the etcd, controller-manager, scheduler and kube-proxy targets, because kubeadm binds their metrics to `127.0.0.1`, out of Prometheus's reach.
 
@@ -116,7 +118,7 @@ Only NGINX is reachable from the Internet, on the edge node's ports 80 (redirect
 | `/auth/` | Keycloak (login, registration, admin console) |
 | `/grafana/` | Grafana (its own login) |
 
-The APIs sit under `/api` because the frontend's pages also use `/movies`, `/recommendations` and `/users`. Nothing else is routed, so there is no route to the services' `/q/...` (health, metrics, Swagger UI), profiles-service's `/internal/...`, the worker, Ollama, the databases, Kafka or Prometheus. They don't need a route to be monitored, because Prometheus runs inside the cluster and scrapes them on their internal Services. The NetworkPolicies above also enforce that each database accepts connections only from its own service.
+The APIs sit under `/api` because the frontend's pages also use `/movies`, `/recommendations` and `/users`. Nothing else is routed, so there is no route to the services' `/q/...` (health, metrics, Swagger UI), profiles-service's `/internal/...`, the worker, Ollama, the databases, Kafka, Prometheus or Loki. They don't need a route to be monitored, because Prometheus runs inside the cluster and scrapes them on their internal Services. The NetworkPolicies above also enforce that each database accepts connections only from its own service.
 
 Keycloak's browser library refuses to work over plain HTTP (it needs the browser's Web Crypto API, which only exists on HTTPS pages), so NGINX always serves HTTPS. Without a certificate of your own, the playbook makes a self-signed one for the static IP, so the browser warns once and works after you accept it. See [Using a real certificate](#using-a-real-certificate).
 
@@ -233,7 +235,7 @@ Or one step at a time, which is easier to follow (and to show in the video):
 |---|---|---|
 | `just infra` | Runs Terraform twice, first in `terraform/persistent/` (the data disks and the static IP, created the first time and reused after), then for the network, firewall and VMs, with the data disks attached, and writes `ansible/inventory.ini`. Each shows its plan and asks for `yes` | ~1 min |
 | `just cluster` | Prepares the VMs (containerd, kubelet, kubeadm, the data disks mounted at `/mnt/data`), `kubeadm init`, Calico, joins the workers, labels the edge node and saves the kubeconfig to `.kube/config` | ~5 min |
-| `just platform` | The volumes (folders on the data disks), Strimzi (Kafka operator), kube-prometheus-stack (Prometheus, Grafana) | ~4 min |
+| `just platform` | The volumes (folders on the data disks), Strimzi (Kafka operator), kube-prometheus-stack (Prometheus, Grafana), Loki and Fluent Bit (the logs) | ~4 min |
 | `just app` | Databases (and the movies dump, the first time), Kafka, Ollama and its models, Keycloak, the services, the frontend, NGINX, monitoring | ~12 min the first time (the models are ~2.5 GB) |
 
 Every step can run again, since it only changes what differs (a second `just app` restarts nothing, and doesn't load the dump again). `just app` applies the layers in order, waiting for each before the next one that needs it. The order is databases, Kafka, Ollama and its models, Keycloak, the four services and the frontend, NGINX, then what Prometheus scrapes and Grafana's dashboard.
@@ -290,7 +292,7 @@ just start    # all three VMs started again, then waits until the application an
 
 Stopped VMs aren't billed for CPU. Only their disks and the static address are, and the disks are what keeps the data. The application's address (the static IP) never changes.
 
-**What survives a stop and start.** Every database (movies, profiles, recommendations, Keycloak), Kafka's topics and queued messages, Ollama's models, Prometheus's history and Grafana's database survive it, because they live on the workers' data disks. They also survive `just destroy` (see [Persistent data](#persistent-data)).
+**What survives a stop and start.** Every database (movies, profiles, recommendations, Keycloak), Kafka's topics and queued messages, Ollama's models, Prometheus's history, Grafana's database and Loki's logs survive it, because they live on the workers' data disks. They also survive `just destroy` (see [Persistent data](#persistent-data)).
 
 **What doesn't:**
 
@@ -325,7 +327,7 @@ The project, the service account and the images on Docker Hub stay, and cost not
 
 ## Persistent data
 
-Every piece of state the application has (the four databases, Kafka's brokers, Ollama's models, Prometheus's history and Grafana's database) lives on a data disk, one per worker, separate from the VMs. A new cluster on new VMs finds the same files and starts from them. The first time, the disks are blank and everything starts empty.
+Every piece of state the application has (the four databases, Kafka's brokers, Ollama's models, Prometheus's history, Grafana's database and Loki's logs) lives on a data disk, one per worker, separate from the VMs. A new cluster on new VMs finds the same files and starts from them. The first time, the disks are blank and everything starts empty.
 
 Persistent state is the project's advanced feature. The data stays on disks attached to the VMs, so the storage is self-hosted rather than a managed cloud database, and the feature doesn't depend on keeping the Terraform state. This is why `just persistent` can take over existing disks even when it has no state for them, as described below.
 
@@ -352,8 +354,9 @@ The static IP is kept because Keycloak's realm, which is in its database on the 
 | `kafka/data-0-movies-kafka-dual-1` | 5Gi | Kafka broker 1 | worker2 |
 | `monitoring/data-prometheus-monitoring-kube-prometheus-prometheus-0` | 10Gi | Prometheus's history, 7 days | worker2 |
 | `monitoring/monitoring-grafana` | 2Gi | Grafana's database, with users, preferences and anything made in its UI | worker2 |
+| `monitoring/data-loki-0` | 5Gi | Loki's logs, 7 days | worker2 |
 
-Each is a local volume at `/mnt/data/<namespace>/<claim>`, pinned to its worker (node affinity) and to its claim by namespace and name (`claimRef`), with `Retain`, so the claim of that name in a new cluster gets the same folder and its pod is scheduled on that worker. A local volume doesn't enforce the size, but the disk's 40 GB does (worker1's claims add up to 26Gi, worker2's to 32Gi). PostgreSQL keeps its files in a `pgdata` subfolder, since the volume's root can hold a `lost+found` that `initdb` refuses. Don't move a volume to another worker once it has data.
+Each is a local volume at `/mnt/data/<namespace>/<claim>`, pinned to its worker (node affinity) and to its claim by namespace and name (`claimRef`), with `Retain`, so the claim of that name in a new cluster gets the same folder and its pod is scheduled on that worker. A local volume doesn't enforce the size, but the disk's 40 GB does (worker1's claims add up to 26Gi, worker2's to 37Gi). PostgreSQL keeps its files in a `pgdata` subfolder, since the volume's root can hold a `lost+found` that `initdb` refuses. Don't move a volume to another worker once it has data.
 
 **Starting from the data, or from nothing.** Each component already initialises only what's empty. PostgreSQL runs `initdb` only on an empty folder, Flyway applies only the migrations not yet applied, `04-app.yml` loads the movies dump only if the movies table is missing, Keycloak imports the realm only if it doesn't exist, and Ollama downloads only the models it doesn't have. `04-app.yml` makes two more checks:
 
@@ -386,7 +389,7 @@ just snapshot rebuilt
 just compare before rebuilt
 ```
 
-`just snapshot <label>` runs `evidence/snapshot.sh`, which writes `evidence/<label>.txt` with the recommendation requests by status, the row counts of the profiles database, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics and its consumer groups' offsets, Ollama's models, Prometheus's oldest sample, when Grafana's users and organisations were created and the volumes' status. It also writes `<label>-pods.txt`, the pod list, for reference. `just compare` runs `evidence/compare.sh`, which ignores the "N minutes ago" text of the models.
+`just snapshot <label>` runs `evidence/snapshot.sh`, which writes `evidence/<label>.txt` with the recommendation requests by status, the row counts of the profiles database, the number of movies, the finished recommendation requests and their items, the Keycloak usernames, Kafka's topics and its consumer groups' offsets, Ollama's models, Prometheus's oldest sample, Loki's oldest log line, when Grafana's users and organisations were created and the volumes' status. It also writes `<label>-pods.txt`, the pod list, for reference. `just compare` runs `evidence/compare.sh`, which ignores the "N minutes ago" text of the models.
 
 **Before the first snapshot, wait until no recommendation request is `PENDING`.** A request in flight when the VMs stop fails by design (see [Stop and start the VMs](#stop-and-start-the-vms)), so the two snapshots would differ for a legitimate reason, since a failed profile request is deleted.
 
@@ -422,6 +425,7 @@ Grafana, at `https://<static IP>/grafana` (user `admin`, password in `ansible/.s
 | Recommendations (recommendation-service, recommendation-worker) | Requests waiting, then answered without the model, median wait for a typed request and failed or timed out (each over 1 h), requests per minute by kind and outcome, time to an answer, waiting vs working per job, Ollama's answer time and tokens per second, recommendation sets per minute, and profile sets the background agent queued per hour |
 | Search and embeddings (movies-service) | Searches per minute, searches finding nothing and search time, candidate queries' time by ranking, embedding calls to Ollama, movies embedded per minute and still to embed, and request vectors already known |
 | Infrastructure (Kubernetes, JVM and exporters) | Requests per second, average latency and 5xx errors per service, the slowest endpoints, NGINX requests and connections, Kafka consumer lag, PostgreSQL connections, Ollama's CPU and memory, CPU and memory per pod, JVM heap per service, and node CPU used and memory available |
+| Logs (Loki, collected by Fluent Bit) | Log lines per minute and warnings and errors per minute, by app, then the warning and error lines themselves (see [Logs](#logs)) |
 
 The screenshots below show the first three rows on 16/10/2026, with the demo users of `loadtest/activity.js` active. The 200 load-test users were still there, hence 209 profiles.
 
@@ -434,6 +438,23 @@ The screenshots below show the first three rows on 16/10/2026, with the demo use
 The Infrastructure row during the load test of 15/10/2026 is in [loadtest/README.md → Results](loadtest/README.md#results-15102026).
 
 Prometheus isn't public. On your computer, with kubectl installed, `just prometheus` forwards its Service (`monitoring-kube-prometheus-prometheus`, port 9090) through the kubeconfig in `infra/.kube/config`, and then you open `http://localhost:9090`. Its *Status → Targets* page lists everything above and whether each is up.
+
+## Logs
+
+Every container's log, the same lines `kubectl logs` shows, is also kept in Loki for 7 days, so it can be searched in Grafana across pods, nodes and restarts. `03-platform.yml` installs the two pieces in the `monitoring` namespace, and the services needed no change:
+
+- **Fluent Bit** (`k8s/platform/fluent-bit.values.yaml.j2`), the Fluentd project's lightweight agent, runs on every node as a DaemonSet. It reads the containers' log files (`/var/log/containers`), adds each pod's namespace, name, `app` label and node from the Kubernetes API, and sends the lines to Loki. It records on the node how far it has read each file, so a restart neither loses nor repeats lines, and while Loki is down it waits and retries.
+- **Loki** (`k8s/platform/loki.yaml.j2`) stores them, indexed only by those labels, on a volume on worker2's data disk (`data-loki-0`), so the logs survive `just stop` and `just destroy` like Prometheus's history. It isn't public, and Grafana has it as a data source.
+
+In Grafana, open **Explore** and pick **Loki**. A query selects streams by label, then filters their text:
+
+| Query | Shows |
+|---|---|
+| `{namespace="movies", app="recommendation-worker"}` | The worker's log |
+| `{namespace="movies"} \|~ "WARN\|ERROR\|FATAL"` | Every warning and error of the application |
+| `sum by (app) (count_over_time({namespace="movies"}[1m]))` | Lines per minute, by service |
+
+The labels are `namespace`, `app`, `pod`, `container`, `node` and `job` (always `fluent-bit`). The Logs row of the Movies dashboard shows the second and third queries, and Fluent Bit's own metrics (lines sent, retries) are in Prometheus as `fluentbit_*`. Locally, in Docker Compose, there is no Loki, and `docker compose -f backend/compose.yaml logs -f <service>` shows a service's log.
 
 ## Command reference
 

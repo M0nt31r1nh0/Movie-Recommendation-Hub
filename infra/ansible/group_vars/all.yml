@@ -9,13 +9,15 @@ helm_version: v4.3.0
 strimzi_version: 1.2.0
 kafka_version: 4.3.1
 kube_prometheus_stack_version: 91.8.2
+loki_version: 3.7.8
+fluent_bit_chart_version: 0.58.3   # Fluent Bit 5.1.3
 # Calico's default pod network; must not overlap the VMs' subnet (terraform's subnet_cidr).
 pod_network_cidr: 192.168.0.0/16
 
 # --- Application images ---------------------------------------------------------------------------
 # Built and pushed by infra/build-images.sh <registry> <tag>: set the same values here.
-image_registry: docker.io/tiagog17   # Docker Hub, public
-image_tag: v2
+image_registry: docker.io/joaoruss0   # Docker Hub, public
+image_tag: v3
 # For a private registry, its address and a read-only token (e.g. a GitLab deploy token with
 # read_registry). Leave server empty for a public one.
 image_pull_secret:
@@ -65,6 +67,8 @@ persistent_volumes:
   - { namespace: monitoring, claim: data-prometheus-monitoring-kube-prometheus-prometheus-0, size: 10Gi, node: worker2 }
   # Grafana's database: users, their preferences, and whatever is made in its UI (persistence in the same file).
   - { namespace: monitoring, claim: monitoring-grafana, size: 2Gi, node: worker2 }
+  # Loki's index, chunks and write-ahead log: every container's logs, 7 days (k8s/platform/loki.yaml.j2).
+  - { namespace: monitoring, claim: data-loki-0, size: 5Gi, node: worker2 }
 
 # --- Secrets --------------------------------------------------------------------------------------
 # Generated on the first run into ansible/.secrets/ (not committed) and reused afterwards: that folder

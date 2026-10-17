@@ -11,7 +11,7 @@ The system is four Java (Quarkus) microservices and a Next.js website, one Postg
 
 ![The deployment on Google Cloud, with three VMs, the pods on each, and the workers' data disks](docs/diagrams/deployment.png)
 
-*In Google Cloud, NGINX on worker1 is the only public entry point. Pods with a volume (the databases, Kafka's brokers, Ollama, Prometheus, Grafana) always run on the worker that holds their data disk, while the others can run on either worker.*
+*In Google Cloud, NGINX on worker1 is the only public entry point. Pods with a volume (the databases, Kafka's brokers, Ollama, Prometheus, Grafana, Loki) always run on the worker that holds their data disk, while the others can run on either worker.*
 
 ## Components
 
@@ -27,6 +27,7 @@ The system is four Java (Quarkus) microservices and a Next.js website, one Postg
 | Local deployment | Docker Compose, `just` | `justfile`, `*/compose.yaml` | [infra/README.md → Running locally](infra/README.md#running-locally-with-docker-compose) |
 | Cloud deployment | Terraform, Ansible, kubeadm, Calico, Strimzi, NGINX | `infra/` | [infra/README.md](infra/README.md) |
 | Monitoring | Prometheus, Grafana, Micrometer | `infra/k8s/` | [infra/README.md → Monitoring](infra/README.md#monitoring) |
+| Logs | Fluent Bit, Loki (in Grafana) | `infra/k8s/platform/` | [infra/README.md → Logs](infra/README.md#logs) |
 | Load test | k6 | `infra/loadtest/` | [infra/loadtest/README.md](infra/loadtest/README.md) |
 | Report | LaTeX | `report/` | [report/README.md](report/README.md) |
 
@@ -113,6 +114,6 @@ After `just destroy`, the next `just all` reattaches the data disks, and the app
 | `infra/mgmt/`, `infra/justfile`, `infra/build-images.sh` | The management container, the cloud deployment's commands, the image build |
 | `infra/evidence/`, `infra/loadtest/` | The persistence tests, and the load test of the report's evaluation |
 | `data/` | The cleaned catalogue as a `pg_dump` (`movies_dump.sql`), the raw CSVs and how they were cleaned (`schema.sql`) |
-| `docs/` | The diagrams (editable `.drawio` sources, with PNG exports for the READMEs and PDF exports for the report) and the screenshots |
+| `docs/` | The diagrams (editable `.excalidraw` sources, with PNG exports for the READMEs and PDF exports for the report) and the screenshots |
 | `report/` | The project report (LaTeX) and its PDF, `project-g17.pdf` |
 | `justfile` | The local commands `just local-first-up`, `just local-up` and `just local-down` |

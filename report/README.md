@@ -7,7 +7,7 @@ Build with `./build.sh` (or `latexmk -pdf -jobname=project-g17 main.tex`). The r
 | `main.tex` | Title block, with the group, members and numbers, and the video and repository links |
 | `sections/01-introduction.tex` | Context, the application, the advanced feature, links |
 | `sections/02a-overview.tex` | Architecture overview and Table 1 (components) |
-| `sections/fig-architecture.tex` | Fig. 1, `../docs/diagrams/deployment.pdf` (edit `../docs/diagrams/deployment.drawio`, see `../docs/diagrams/README.md`) |
+| `sections/fig-architecture.tex` | Fig. 1, `../docs/diagrams/deployment.pdf` (edit `../docs/diagrams/deployment.excalidraw`, see `../docs/diagrams/README.md`) |
 | `sections/02b-backend.tex` | Services and data, search, the recommendation pipeline and background agent, model choice, security and tests |
 | `sections/02c-frontend.tex` | The Next.js frontend |
 | `sections/02d-deployment.tex` | Local and cloud deployment, the deployment commands, monitoring |

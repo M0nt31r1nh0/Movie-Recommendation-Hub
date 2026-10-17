@@ -1,0 +1,80 @@
+# Fluent Bit's settings (rendered by ansible/playbooks/03-platform.yml): the Fluentd project's lightweight
+# agent, one pod per node (a DaemonSet), which reads the log file of every container on its node, adds
+# the pod's namespace, name and app label, and sends each line to Loki (k8s/platform/loki.yaml.j2).
+# The services need no change: these are the same lines `kubectl logs` shows.
+
+testFramework:
+  enabled: false
+
+# On every node, the control plane included, which kubeadm taints: its static pods (the API server,
+# etcd) and the load test's k6 pod log there.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+resources:
+  requests: { cpu: 20m, memory: 32Mi }
+  limits: { memory: 128Mi }
+
+# Its own metrics (lines read and sent, retries, errors) for Prometheus, which picks up any ServiceMonitor.
+serviceMonitor:
+  enabled: true
+
+# The nodes run containerd, which keeps the logs in /var/log/pods (linked from /var/log/containers), so
+# the chart's default /var/lib/docker/containers mount isn't needed.
+daemonSetVolumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+  - name: etcmachineid
+    hostPath:
+      path: /etc/machine-id
+      type: File
+daemonSetVolumeMounts:
+  - name: varlog
+    mountPath: /var/log
+  - name: etcmachineid
+    mountPath: /etc/machine-id
+    readOnly: true
+
+config:
+  # Containers' logs only (the kubelet's own stay in the node's journal). The DB file, on the node, records
+  # how far each file has been read, so a restarted Fluent Bit carries on from there instead of skipping
+  # to the end. A new pod's file is found within 10 s (Refresh_Interval) and read from its first line.
+  # While Loki is unreachable it retries forever, and stops reading once 5 MB are waiting: nothing is lost
+  # as long as the lines are still in the node's files.
+  inputs: |
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*.log
+        multiline.parser cri
+        Tag kube.*
+        Refresh_Interval 10
+        DB /var/log/flb_kube.db
+        Mem_Buf_Limit 5MB
+        Skip_Long_Lines On
+
+  # The pod's namespace, name, labels and node, from the Kubernetes API. Merge_Log Off: each line stays
+  # as the container wrote it.
+  filters: |
+    [FILTER]
+        Name kubernetes
+        Match kube.*
+        Merge_Log Off
+        Annotations Off
+        K8S-Logging.Exclude On
+
+  # Loki indexes the labels, not the text: few and with few values (app, not the pod's IP), so queries
+  # select by them ({namespace="movies", app="recommendation-worker"}) and then search the text. Each
+  # line is sent as the container wrote it, without the metadata.
+  outputs: |
+    [OUTPUT]
+        Name loki
+        Match kube.*
+        Host loki.monitoring.svc.cluster.local
+        Port 3100
+        Labels job=fluent-bit, namespace=$kubernetes['namespace_name'], app=$kubernetes['labels']['app'], pod=$kubernetes['pod_name'], container=$kubernetes['container_name'], node=$kubernetes['host']
+        Remove_Keys kubernetes, stream, _p, time
+        Drop_Single_Key raw
+        Retry_Limit False
