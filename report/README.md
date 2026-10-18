@@ -10,12 +10,12 @@ Build with `./build.sh` (or `latexmk -pdf -jobname=project-g17 main.tex`). The r
 | `sections/fig-architecture.tex` | Fig. 1, `../docs/diagrams/deployment.pdf` (edit `../docs/diagrams/deployment.excalidraw`, see `../docs/diagrams/README.md`) |
 | `sections/02b-backend.tex` | Services and data, search, the recommendation pipeline and background agent, model choice, security and tests |
 | `sections/02c-frontend.tex` | The Next.js frontend |
-| `sections/02d-deployment.tex` | Local and cloud deployment, the deployment commands, monitoring |
-| `sections/03-advanced.tex` | Persistent state, with its goal, storage choice, design and validation (Table 2) |
-| `sections/04-evaluation.tex` | Load test, with the method, results (Table 3, Fig. 2) and bottleneck |
+| `sections/02d-deployment.tex` | Local and cloud deployment, the deployment commands, monitoring, logs and alerts (Table 2) |
+| `sections/03-advanced.tex` | Persistent state, with its goal, storage choice, design and validation (Table 3) |
+| `sections/04-evaluation.tex` | Load test, with the method, results (Table 4, Fig. 2) and bottleneck |
 | `sections/05-conclusion.tex` | Conclusion and the declaration of use of AI |
 | `figures/evaluation.pdf` | Fig. 2, made by `../infra/loadtest/plot.py` from `../infra/loadtest/results/final/summary.csv` |
 
-The one placeholder still to fill is marked `\TODO{...}` in red. It is the video link, in the title block and the introduction. Find it with `grep -n TODO main.tex sections/*.tex`.
+The video, https://youtu.be/Drgl3k404wE, is linked in the title block and the introduction. `\TODO{...}` still marks, in red, anything left to fill (none now): `grep -n TODO main.tex sections/*.tex` finds them.
 
 To redraw Fig. 2 after a new load test, run `python ../infra/loadtest/plot.py ../infra/loadtest/results/final --out figures/evaluation.pdf`.

@@ -109,6 +109,16 @@
         --version {{ kube_prometheus_stack_version }} --namespace monitoring --create-namespace
         --values {{ workdir }}/kube-prometheus-stack.values.yaml --wait --timeout 15m
 
+    # Copied, not templated: the rules' {{ $labels }} are Prometheus's.
+    - name: Copy the alert rules
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../k8s/platform/alerts.yaml"
+        dest: "{{ workdir }}/alerts.yaml"
+        mode: "0644"
+
+    - name: Add the alert rules (Prometheus picks up every PrometheusRule)
+      ansible.builtin.command: kubectl apply -f {{ workdir }}/alerts.yaml
+
     # After kube-prometheus-stack, which makes the monitoring namespace and the ServiceMonitor type that
     # Fluent Bit's chart uses. Grafana already has Loki as a data source, which answers once this is up.
     - name: Write Loki

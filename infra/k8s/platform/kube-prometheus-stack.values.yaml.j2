@@ -1,8 +1,15 @@
 # kube-prometheus-stack's settings (rendered by ansible/playbooks/03-platform.yml).
 
-# No alerting in this project.
+# No Alertmanager: the alert rules (k8s/platform/alerts.yaml) fire in Prometheus and show in Grafana,
+# but nothing sends them anywhere.
 alertmanager:
   enabled: false
+
+# The chart's own rules (nodes, pods, Kubernetes) stay on, except the one that only says there's no
+# Alertmanager. Its Watchdog alert always fires, on purpose: it shows the rules are being evaluated.
+defaultRules:
+  disabled:
+    PrometheusNotConnectedToAlertmanagers: true
 
 # kubeadm binds these control-plane components' metrics to 127.0.0.1, out of Prometheus' reach: without
 # this, their targets show as down.

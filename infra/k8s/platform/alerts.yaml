@@ -1,0 +1,62 @@
+# The application's alert rules (applied by ansible/playbooks/03-platform.yml). Prometheus loads every
+# PrometheusRule (ruleSelectorNilUsesHelmValues: false in kube-prometheus-stack.values.yaml.j2) and
+# evaluates them every 30 s; a firing alert shows on its Alerts page and in Grafana's Alerting. There is no
+# Alertmanager, so nothing is sent anywhere.
+#
+# A plain file, not a template: {{ $labels.x }} below is Prometheus's, not Jinja's.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: movies-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: movies
+      rules:
+        # Every Service Prometheus scrapes in the namespace: the four services, NGINX, Keycloak and the
+        # databases' exporters.
+        - alert: ServiceDown
+          expr: up{namespace="movies"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.service }} isn't answering Prometheus"
+            description: "Prometheus couldn't scrape {{ $labels.pod }} for 2 minutes: the pod is down or stuck."
+
+        - alert: HighErrorRate
+          expr: sum by (service) (rate(http_server_requests_seconds_count{namespace="movies", status=~"5.."}[5m])) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.service }} answers with 5xx errors"
+            description: "More than 6 server errors a minute for 5 minutes ({{ $value | humanize }} a second)."
+
+        # The worker's own count of the jobs it finished, by status: failed ones reach the user as an error.
+        - alert: RecommendationsFailing
+          expr: sum(increase(recommendation_jobs_seconds_count{status="failed"}[30m])) > 2
+          labels:
+            severity: warning
+          annotations:
+            summary: "Recommendations are failing"
+            description: "The worker failed {{ $value | humanize }} recommendations in the last 30 minutes."
+
+        # Jobs waiting for the worker. One takes it minutes, so a burst of requests is normal: this is for a
+        # queue that stays long, as when the worker or Ollama is stuck.
+        - alert: RecommendationQueueStuck
+          expr: sum(clamp_min(kafka_consumergroup_lag{consumergroup="recommendation-worker", topic="recommendation.requests"}, 0)) > 20
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Recommendation requests are piling up"
+            description: "{{ $value | humanize }} jobs have been waiting for the worker for more than 15 minutes."
+
+        - alert: PodRestarting
+          expr: increase(kube_pod_container_status_restarts_total{namespace="movies"}[15m]) > 2
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }} keeps restarting"
+            description: "{{ $labels.container }} restarted {{ $value | humanize }} times in 15 minutes."

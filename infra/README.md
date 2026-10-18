@@ -103,7 +103,7 @@ kube-prometheus-stack, release `monitoring` (`k8s/platform/kube-prometheus-stack
 | Loki | StatefulSet (`k8s/platform/loki.yaml.j2`), on worker2 | Keeps every container's logs for 7 days in a 5Gi claim, with 50m, 128Mi → 1Gi. Service `loki:3100` |
 | Fluent Bit (`fluent-bit`) | DaemonSet (Helm chart `fluent/fluent-bit`) | One per node, the control plane included, with 20m, 32Mi → 128Mi |
 
-Alertmanager is disabled, and so are the etcd, controller-manager, scheduler and kube-proxy targets, because kubeadm binds their metrics to `127.0.0.1`, out of Prometheus's reach.
+Alertmanager is disabled, so alerts show in Prometheus and Grafana without being sent anywhere (see [Alerts](#alerts)). So are the etcd, controller-manager, scheduler and kube-proxy targets, because kubeadm binds their metrics to `127.0.0.1`, out of Prometheus's reach.
 
 ## What's public, and what isn't
 
@@ -438,6 +438,27 @@ The screenshots below show the first three rows on 16/10/2026, with the demo use
 The Infrastructure row during the load test of 15/10/2026 is in [loadtest/README.md → Results](loadtest/README.md#results-15102026).
 
 Prometheus isn't public. On your computer, with kubectl installed, `just prometheus` forwards its Service (`monitoring-kube-prometheus-prometheus`, port 9090) through the kubeconfig in `infra/.kube/config`, and then you open `http://localhost:9090`. Its *Status → Targets* page lists everything above and whether each is up.
+
+## Alerts
+
+Prometheus evaluates alert rules every 30 seconds. `03-platform.yml` applies ours, the PrometheusRule `movies-alerts` in `k8s/platform/alerts.yaml`:
+
+| Alert | Fires when |
+|---|---|
+| `ServiceDown` (critical) | A Service in `movies` can't be scraped for 2 minutes |
+| `HighErrorRate` | A service answers more than 6 server errors (5xx) a minute, for 5 minutes |
+| `RecommendationsFailing` | The worker failed more than 2 recommendations in 30 minutes |
+| `RecommendationQueueStuck` | More than 20 jobs wait for the worker for 15 minutes |
+| `PodRestarting` | A pod in `movies` restarted more than twice in 15 minutes |
+
+The chart adds its own rules for the nodes, pods and Kubernetes (about 130). Its `Watchdog` alert always fires, on purpose, to show that the rules are being evaluated. The one that would only say there is no Alertmanager is turned off in `kube-prometheus-stack.values.yaml.j2`.
+
+There is no Alertmanager, so an alert isn't sent anywhere, but it can be seen in two places:
+
+- **Grafana:** *Alerting → Alert rules*, under the Prometheus data source, lists every rule with its state (Normal, Pending or Firing). The *Firing* filter shows only the active ones.
+- **Prometheus:** with `just prometheus`, the *Alerts* page at `http://localhost:9090/alerts`.
+
+To change a threshold, edit `alerts.yaml` and run `just platform` (or `kubectl apply -f k8s/platform/alerts.yaml`): Prometheus reloads the rules within a couple of minutes. To be notified, turn Alertmanager on in `kube-prometheus-stack.values.yaml.j2` and give it a receiver (email, Slack or a webhook).
 
 ## Logs
 

@@ -11,4 +11,19 @@ just stop | start | destroy
 \end{verbatim}}
 \noindent The repository's \code{README.md} and \code{infra/README.md} give every step, including the one-time Google Cloud setup.
 
-\subsubsection{Monitoring} Prometheus scrapes, every 15\,s, each service's Micrometer metrics, the databases' and NGINX's exporters, Kafka's lag and the nodes. Beyond the standard HTTP and JVM metrics, each service records application metrics, such as searches and whether they found anything, profile changes, recommendation requests by kind and outcome (including those answered without the model), the time from a request to its answer, jobs waiting in Kafka, and each model call's duration and tokens, since Ollama has no metrics of its own. A provisioned Grafana dashboard, \emph{Movies}, is built on them, and is served at \code{/grafana}, while Prometheus itself is not public.
+\subsubsection{Monitoring} Prometheus scrapes, every 15\,s, each service's Micrometer metrics, the databases' and NGINX's exporters, Kafka's lag and the nodes. Beyond the standard HTTP and JVM metrics, each service records application metrics, such as searches and whether they found anything, profile changes, recommendation requests by kind and outcome (including those answered without the model), the time from a request to its answer, jobs waiting in Kafka, and each model call's duration and tokens, since Ollama has no metrics of its own. A provisioned Grafana dashboard, \emph{Movies}, is built on them, and is served at \code{/grafana}, while Prometheus itself is not public. Fluent Bit, on every node, collects each container's log, and Loki aggregates them for 7~days, so they can be searched in Grafana across pods and restarts. Prometheus also evaluates our alert rules (Table~\ref{tab:alerts}), besides kube-prometheus-stack's defaults, and Grafana lists them by state. There is no Alertmanager, so alerts are not sent anywhere.
+
+\begin{table}[t]\centering\footnotesize
+\caption{Our alert rules, besides kube-prometheus-stack's defaults.}\label{tab:alerts}
+\begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{3.6cm}>{\raggedright\arraybackslash}p{1.05cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Alert} & \textbf{Severity} & \textbf{Fires when}\\
+\midrule
+\code{ServiceDown} & critical & A Service in \code{movies} can't be scraped for 2\,min\\
+\code{HighErrorRate} & warning & A service answers more than 6 server errors (5xx) a minute, for 5\,min\\
+\code{RecommendationsFailing} & warning & The worker failed more than 2 recommendations in 30\,min\\
+\code{RecommendationQueueStuck} & warning & More than 20 jobs wait for the worker for 15\,min\\
+\code{PodRestarting} & warning & A pod in \code{movies} restarted more than twice in 15\,min\\
+\bottomrule
+\end{tabularx}
+\end{table}
