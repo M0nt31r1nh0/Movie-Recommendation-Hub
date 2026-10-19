@@ -2,6 +2,3 @@
 \section{Conclusion}\label{sec:conclusion}
 
 We built a Movie Recommendation Hub as four Quarkus microservices and a Next.js frontend, with Keycloak, one PostgreSQL database per service, and Kafka between the recommendation service and its worker. It runs locally in Docker with one command, and in Google Cloud on a self-hosted Kubernetes cluster created with Terraform and Ansible and monitored with Prometheus and Grafana. Qwen2.5~3B, served by Ollama, recommends movies on demand and, through a background agent, ahead of time. Data disks that outlive the VMs, volumes bound to them by name and idempotent initialisation let the whole infrastructure be stopped, or destroyed and recreated, without losing state, which we verified end to end. The cluster serves about 216\,req/s before worker1's CPU saturates, mostly in the catalogue database. Next steps would be spreading and replicating the stateless services, a GPU node for the model, and a CI/CD pipeline.
-
-\section*{Declaration of Use of AI}
-We used Claude (Anthropic), through Claude Code, as a coding assistant while developing and deploying the system, and to help write and revise its documentation, diagrams and this report. The group reviewed, tested and edited all of its output, and takes full responsibility for the content.
